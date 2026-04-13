@@ -1,0 +1,12 @@
+.env
+.env.local
+serviceAccountKey.json
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+node_modules/
+.next/
+.DS_Store
+*.log
