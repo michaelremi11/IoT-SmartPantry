@@ -1,0 +1,17 @@
+# /etc/systemd/system/smart-pantry.target
+#
+# Convenience target that groups all three Smart Pantry services.
+# Starting/stopping this target affects all three services together.
+#
+# Usage:
+#   sudo systemctl start smart-pantry.target
+#   sudo systemctl stop  smart-pantry.target
+#   sudo systemctl status smart-pantry.target
+
+[Unit]
+Description=Smart Pantry + Kitchen Hub (all services)
+Requires=analytics_api.service ollama_monitor.service kivy_hub.service
+After=analytics_api.service ollama_monitor.service
+
+[Install]
+WantedBy=multi-user.target

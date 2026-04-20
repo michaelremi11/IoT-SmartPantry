@@ -1,0 +1,63 @@
+# /etc/systemd/system/kivy_hub.service
+#
+# Smart Pantry — Kivy Hub UI
+# Manages the touchscreen Kivy application on the Raspberry Pi.
+#
+# Install:
+#   sudo cp deploy/systemd/kivy_hub.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now kivy_hub
+#
+# Logs:
+#   journalctl -u kivy_hub -f
+
+[Unit]
+Description=Smart Pantry Kivy Hub UI
+Documentation=https://github.com/your-org/IoT-SmartPantry
+# Wait for network and the local analytics API to be ready
+After=network-online.target analytics_api.service
+Wants=network-online.target
+# If the analytics API is available, start after it; but don't require it
+# (hub can operate offline with SQLite fallback)
+PartOf=smart-pantry.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/IoT-SmartPantry
+
+# Load environment from the project .env file
+EnvironmentFile=/home/pi/IoT-SmartPantry/.env
+
+# Kivy needs a display — use the Pi's primary framebuffer
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+# Force Kivy to use the SDL2 window provider (correct for Pi touchscreen)
+Environment=KIVY_WINDOW=sdl2
+Environment=KIVY_GL_BACKEND=gl
+# Suppress Kivy's own console UI chrome
+Environment=KIVY_NO_CONSOLELOG=1
+
+ExecStart=/home/pi/IoT-SmartPantry/venv/bin/python -m hub.main
+
+# Restart policy: always restart on failure after a 5 s cool-down
+Restart=on-failure
+RestartSec=5s
+# After 5 consecutive rapid failures, stop trying (prevents thrash loops)
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+# Write stdout/stderr to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kivy-hub
+
+# Resource limits — leave headroom for Ollama and analytics
+LimitNOFILE=4096
+# Prevent the hub from consuming all memory and OOM-killing Ollama
+MemoryMax=512M
+MemorySwapMax=0
+
+[Install]
+WantedBy=graphical.target

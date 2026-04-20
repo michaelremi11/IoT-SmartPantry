@@ -68,9 +68,41 @@ class AddItemScreen(Screen):
         self.add_widget(root)
 
     def prefill_barcode(self, barcode: str):
-        """Called by the scanner when a barcode is detected."""
+        """Pre-fill the barcode field when the scanner fires."""
         self.barcode_input.text = barcode
-        # TODO: Look up barcode in Open Food Facts API to auto-fill name/category
+
+    def prefill_from_api(self, data: dict):
+        """
+        Populate form fields from the FastAPI /lookup/{sku} response.
+
+        Expected keys (all optional):
+          product_name, quantity, unit, category, expiry_date
+        """
+        if data.get("product_name"):
+            self.name_input.text = data["product_name"]
+        if data.get("quantity"):
+            self.qty_input.text = str(data["quantity"])
+        if data.get("unit"):
+            self.unit_input.text = data["unit"]
+        if data.get("category"):
+            self.category_input.text = data["category"]
+        if data.get("expiry_date"):
+            self.expiry_input.text = data["expiry_date"]
+
+    def set_status(self, message: str, color: str = "info"):
+        """
+        Display a status message below the form.
+
+        color: 'info' | 'success' | 'warning' | 'error'
+        """
+        _colors = {
+            "info":    (0.4, 0.8, 1.0, 1),
+            "success": (0.2, 0.9, 0.4, 1),
+            "warning": (1.0, 0.75, 0.2, 1),
+            "error":   (1.0, 0.3,  0.3, 1),
+        }
+        self.status_label.color = _colors.get(color, _colors["info"])
+        self.status_label.text  = message
 
     def _on_save(self, *_args):
         name = self.name_input.text.strip()

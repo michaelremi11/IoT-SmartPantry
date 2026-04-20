@@ -1,0 +1,81 @@
+# /etc/systemd/system/ollama_monitor.service
+#
+# Smart Pantry — Ollama LLM Monitor & Watchdog
+# Starts the Ollama server and watches it with our RAM-guard.
+# If Ollama crashes, systemd restarts it; if RAM is low, the
+# ram_guard.py script blocks new inference requests before they
+# are submitted to Ollama (see hub/services/ram_guard.py).
+#
+# Install:
+#   sudo cp deploy/systemd/ollama_monitor.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ollama_monitor
+#
+# Logs:
+#   journalctl -u ollama_monitor -f
+#
+# Manual model pull (do this ONCE after first boot):
+#   ollama pull llama3.2:1b
+
+[Unit]
+Description=Smart Pantry Ollama LLM Server + RAM Watchdog
+Documentation=https://ollama.com
+# Ollama needs network for the initial model pull; subsequent inference is local
+After=network-online.target
+Wants=network-online.target
+PartOf=smart-pantry.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/IoT-SmartPantry
+
+EnvironmentFile=/home/pi/IoT-SmartPantry/.env
+
+# ── Phase 1: Ensure the model is present before accepting requests ──────
+# Pull the model if it is missing (no-op if already cached)
+ExecStartPre=/usr/local/bin/ollama pull llama3.2:1b
+
+# ── Phase 2: Start the Ollama HTTP server ──────────────────────────────
+# Ollama listens on 11434 by default. Bind to loopback only.
+ExecStart=/usr/local/bin/ollama serve
+
+# ── Phase 3: Launch the RAM-guard alongside Ollama ─────────────────────
+# The RAM-guard runs as a sidecar process in the same unit scope.
+# It writes /run/smart-pantry/ram_ok (a flag file) that sku_client.py
+# checks before dispatching Ollama requests.
+ExecStartPost=/home/pi/IoT-SmartPantry/venv/bin/python \
+    /home/pi/IoT-SmartPantry/hub/services/ram_guard.py \
+    --threshold-mb 500 \
+    --flag-file /run/smart-pantry/ram_ok \
+    --poll-interval 10 &
+
+# Environment variables for Ollama
+# Keep models on the SSD/main filesystem (not /tmp)
+Environment=OLLAMA_MODELS=/home/pi/.ollama/models
+# Bind only to loopback
+Environment=OLLAMA_HOST=127.0.0.1:11434
+# Limit Ollama to 2 parallel requests (Pi can't handle more)
+Environment=OLLAMA_NUM_PARALLEL=1
+# Cap at ~1.8 GB VRAM equivalent (shared RAM on Pi 4)
+Environment=OLLAMA_MAX_LOADED_MODELS=1
+
+Restart=on-failure
+RestartSec=10s
+# Give Ollama more time to cold-start (model load takes ~30 s on Pi 4)
+TimeoutStartSec=120s
+StartLimitIntervalSec=180s
+StartLimitBurst=3
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ollama-monitor
+
+# Ollama is the heaviest process — allow it up to 2 GB
+MemoryMax=2G
+MemorySwapMax=0
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
