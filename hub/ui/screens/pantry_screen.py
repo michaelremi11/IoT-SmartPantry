@@ -10,6 +10,8 @@ from kivy.uix.button import Button
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.gridlayout import GridLayout
 from kivy.clock import Clock
+import os
+import httpx
 
 
 class PantryScreen(Screen):
@@ -18,9 +20,9 @@ class PantryScreen(Screen):
     Supports Add, Edit, and Delete operations via touchscreen.
     """
 
-    def __init__(self, db, **kwargs):
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.db = db
+        self.api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
         self.name = "pantry"
         self._build_ui()
         # Refresh inventory every 30 seconds
@@ -79,10 +81,15 @@ class PantryScreen(Screen):
             self.item_grid.add_widget(w)
 
         try:
-            docs = self.db.collection("pantryItems").order_by("name").stream()
+            res = httpx.get(f"{self.api_url}/inventory", timeout=5.0)
+            res.raise_for_status()
+            docs = res.json()
+            # Sort locally for now
+            docs.sort(key=lambda x: x.get("name", ""))
             for doc in docs:
-                item = doc.to_dict()
-                item["_id"] = doc.id
+                item = doc
+                item["_id"] = doc.get("id")
+                item["quantity"] = doc.get("amount") # map mapped field
                 self._add_row(item)
         except Exception as exc:
             self.item_grid.add_widget(
@@ -111,9 +118,9 @@ class PantryScreen(Screen):
         self.manager.current = "add_item"
 
     def _on_delete(self, doc_id: str):
-        """Delete an item from Firestore and refresh."""
+        """Delete an item from API and refresh."""
         try:
-            self.db.collection("pantryItems").document(doc_id).delete()
+            httpx.delete(f"{self.api_url}/inventory/{doc_id}")
             self._refresh()
         except Exception as exc:
             print(f"[PantryScreen] Delete error: {exc}")

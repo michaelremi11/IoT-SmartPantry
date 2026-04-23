@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
+import httpx
 
 load_dotenv()
 
@@ -31,8 +32,9 @@ class EnvironmentLogger:
     DEVICE_ID = os.getenv("HUB_DEVICE_ID", "hub-rpi4-001")
     INTERVAL = int(os.getenv("HUB_TEMP_LOG_INTERVAL_SECONDS", "300"))
 
-    def __init__(self, db):
-        self.db = db
+    API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+
+    def __init__(self):
         self.sense = SenseHat() if _SENSE_AVAILABLE else None
 
     def _read(self) -> dict:
@@ -53,13 +55,19 @@ class EnvironmentLogger:
         }
 
     def log_once(self) -> dict:
-        """Read sensors and push one record to Firestore. Returns the record."""
+        """Read sensors and push one record to API. Returns the record."""
         reading = self._read()
-        self.db.collection(self.COLLECTION).add(reading)
-        logger.info(
-            f"[SenseHAT] Logged: {reading['temperatureC']}°C / "
-            f"{reading['humidityPercent']}% RH"
-        )
+        try:
+            # Send reading to Central API which routes to InfluxDB
+            reading["timestamp"] = reading["timestamp"].isoformat()
+            res = httpx.post(f"{self.API_URL}/sensors/log", json=reading, timeout=5.0)
+            res.raise_for_status()
+            logger.info(
+                f"[SenseHAT] API Logged: {reading['temperatureC']}°C / "
+                f"{reading['humidityPercent']}% RH"
+            )
+        except Exception as exc:
+            logger.error(f"[SenseHAT] API Error log_once: {exc}")
         return reading
 
     def run_loop(self):

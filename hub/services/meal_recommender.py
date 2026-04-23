@@ -69,7 +69,6 @@ def get_meal_recommendations(db, max_items: int = 20) -> list[dict]:
 
     Parameters
     ----------
-    db        : Firestore client (from hub.firebase.get_db or analytics.firebase.get_db).
     max_items : Cap the ingredient list to avoid prompt overflow.
 
     Returns
@@ -82,10 +81,20 @@ def get_meal_recommendations(db, max_items: int = 20) -> list[dict]:
     RuntimeError  if Ollama is unreachable or returns unparseable output.
     """
     # ── 1. Fetch in-stock inventory ────────────────────────────────────
-    docs = db.collection("inventory").where("in_stock", "==", True).stream()
+    API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+    import httpx
+    try:
+        res = httpx.get(f"{API_URL}/inventory")
+        res.raise_for_status()
+        docs = res.json()
+    except Exception as exc:
+        logger.warning("[MealRecommender] Could not fetch inventory from API: %s", exc)
+        return []
+
     in_stock_items = []
-    for d in docs:
-        data = d.to_dict()
+    for data in docs:
+        if not data.get("in_stock", True):
+            continue
         name    = data.get("name", "Unknown")
         amount  = data.get("amount", "?")
         unit    = data.get("unit", "unit")

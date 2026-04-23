@@ -13,6 +13,9 @@ Endpoints:
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from dotenv import load_dotenv
+
+load_dotenv() # Load variables from .env file
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -41,6 +44,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from analytics.routers.analytics import router as analytics_router
+app.include_router(analytics_router)
 
 # ---------------------------------------------------------------------------
 # Request / Response models
@@ -405,3 +411,7 @@ def meal_recommendations():
         "model":       OLLAMA_MODEL,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+print("--- Analytics Registered Routes ---")
+for route in app.routes:
+    print(f"Registered: {getattr(route, 'path', 'Unknown')}")

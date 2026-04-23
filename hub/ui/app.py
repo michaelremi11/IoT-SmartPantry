@@ -17,7 +17,6 @@ from kivy.app import App
 from kivy.uix.screenmanager import ScreenManager, SlideTransition
 from kivy.clock import Clock
 
-from hub.firebase import get_db
 from hub.ui.screens import PantryScreen, AddItemScreen
 from hub.scanner.keyboard_wedge import KeyboardWedge
 from hub.services.sku_client import (
@@ -38,12 +37,10 @@ class SmartPantryApp(App):
     title = "Smart Pantry Hub"
 
     def build(self):
-        self.db = get_db()
-
         # ── Screen manager ─────────────────────────────────────────────
         self.sm = ScreenManager(transition=SlideTransition())
-        self.add_item_screen = AddItemScreen(db=self.db)
-        self.pantry_screen   = PantryScreen(db=self.db)
+        self.add_item_screen = AddItemScreen()
+        self.pantry_screen   = PantryScreen()
 
         self.sm.add_widget(self.pantry_screen)
         self.sm.add_widget(self.add_item_screen)
@@ -58,7 +55,7 @@ class SmartPantryApp(App):
         start_sync_monitor(on_sync=self._on_sync_complete)
 
         # ── Environment logger (background thread) ─────────────────────
-        env_logger = EnvironmentLogger(db=self.db)
+        env_logger = EnvironmentLogger()
         env_thread = threading.Thread(target=env_logger.run_loop, daemon=True)
         env_thread.start()
 
@@ -157,7 +154,7 @@ class SmartPantryApp(App):
 
         def _worker():
             try:
-                recipes = get_meal_recommendations(self.db)
+                recipes = get_meal_recommendations()
                 Clock.schedule_once(lambda dt: self._on_recipes_ready(recipes))
             except Exception as exc:
                 logger.error("[App] Meal recommendations failed: %s", exc)

@@ -12,14 +12,16 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
+import os
+import httpx
 
 
 class AddItemScreen(Screen):
     """Form screen to add a new pantry item to Firestore."""
 
-    def __init__(self, db, **kwargs):
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.db = db
+        self.api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
         self.name = "add_item"
         self._build_ui()
 
@@ -127,7 +129,7 @@ class AddItemScreen(Screen):
         }
 
         try:
-            self.db.collection("pantryItems").add(item)
+            httpx.post(f"{self.api_url}/inventory", json={"name": item["name"], "amount": item["quantity"], "unit": item["unit"], "category": item["category"], "in_stock": True})
             self._clear_fields()
             self.manager.current = "pantry"
         except Exception as exc:

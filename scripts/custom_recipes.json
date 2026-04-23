@@ -1,0 +1,184 @@
+{
+  "recipes": [
+    {
+      "title": "Scrambled Eggs",
+      "estimated_time": "5 minutes",
+      "ingredients": ["2 Eggs", "1 tbsp Butter", "Salt", "Black Pepper"],
+      "instructions": "1. Whisk eggs with salt and pepper. 2. Melt butter in a skillet over medium-low heat. 3. Pour in eggs and stir gently until soft curds form. 4. Remove from heat while still moist."
+    },
+    {
+      "title": "Avocado Toast",
+      "estimated_time": "5 minutes",
+      "ingredients": ["1 slice Bread", "1/2 Avocado", "Red pepper flakes", "Lemon juice", "Salt"],
+      "instructions": "1. Toast bread until golden. 2. Mash avocado with lemon juice and salt. 3. Spread onto toast and sprinkle with red pepper flakes."
+    },
+    {
+      "title": "Pasta Carbonara",
+      "estimated_time": "20 minutes",
+      "ingredients": ["200g Spaghetti", "2 Eggs", "50g Parmesan cheese", "100g Pancetta or Bacon", "Garlic"],
+      "instructions": "1. Boil pasta. 2. Fry pancetta with garlic until crisp. 3. Whisk eggs and cheese. 4. Toss drained pasta with pancetta, remove from heat, and quickly stir in egg mixture with a splash of pasta water."
+    },
+    {
+      "title": "Chicken Stir Fry",
+      "estimated_time": "25 minutes",
+      "ingredients": ["1 Chicken breast, cubed", "2 cups Mixed vegetables", "2 tbsp Soy sauce", "1 tbsp Ginger, minced", "Rice"],
+      "instructions": "1. Cook rice. 2. Brown chicken in a hot pan. 3. Add vegetables and ginger, stir-frying for 5 minutes. 4. Add soy sauce and toss. 5. Serve over rice."
+    },
+    {
+      "title": "Grilled Cheese",
+      "estimated_time": "10 minutes",
+      "ingredients": ["2 slices Bread", "2 slices Cheddar cheese", "1 tbsp Butter"],
+      "instructions": "1. Butter bread. 2. Place one slice in skillet, add cheese, and top with second slice. 3. Grill until golden on both sides."
+    },
+    {
+      "title": "Classic Pancakes",
+      "estimated_time": "20 minutes",
+      "ingredients": ["1 cup Flour", "1 cup Milk", "1 Egg", "2 tbsp Sugar", "1 tsp Baking powder"],
+      "instructions": "1. Whisk dry ingredients, then stir in milk and egg. 2. Pour batter onto a hot, greased griddle. 3. Flip when bubbles form and cook until golden."
+    },
+    {
+      "title": "Spaghetti Aglio e Olio",
+      "estimated_time": "15 minutes",
+      "ingredients": ["200g Spaghetti", "4 cloves Garlic, sliced", "1/4 cup Olive oil", "Red pepper flakes", "Parsley"],
+      "instructions": "1. Boil pasta. 2. Sauté garlic and red pepper flakes in oil over low heat. 3. Toss pasta with oil and parsley, adding a splash of pasta water."
+    },
+    {
+      "title": "Tomato Soup",
+      "estimated_time": "25 minutes",
+      "ingredients": ["1 can Crushed tomatoes", "1 Onion, diced", "2 cups Vegetable broth", "1/2 cup Heavy cream"],
+      "instructions": "1. Sauté onion until soft. 2. Add tomatoes and broth; simmer for 15 minutes. 3. Blend until smooth. 4. Stir in cream."
+    },
+    {
+      "title": "Beef Tacos",
+      "estimated_time": "20 minutes",
+      "ingredients": ["500g Ground beef", "Taco seasoning", "6 Taco shells", "Shredded lettuce", "Tomato"],
+      "instructions": "1. Brown beef and drain fat. 2. Add seasoning and water; simmer for 5 minutes. 3. Fill shells and top with lettuce and tomato."
+    },
+    {
+      "title": "Quesadilla",
+      "estimated_time": "10 minutes",
+      "ingredients": ["2 Flour tortillas", "1 cup Shredded cheese", "1/2 cup Cooked chicken or beans"],
+      "instructions": "1. Place tortilla in skillet. 2. Add cheese and protein. 3. Top with second tortilla and heat until cheese melts and tortilla is crisp."
+    },
+    {
+      "title": "Tuna Salad Sandwich",
+      "estimated_time": "10 minutes",
+      "ingredients": ["1 can Tuna", "2 tbsp Mayonnaise", "1 tbsp Celery, diced", "2 slices Bread"],
+      "instructions": "1. Drain tuna and mix with mayo and celery. 2. Season and spread onto bread."
+    },
+    {
+      "title": "Oatmeal",
+      "estimated_time": "10 minutes",
+      "ingredients": ["1/2 cup Rolled oats", "1 cup Water or Milk", "1 tbsp Honey", "Cinnamon"],
+      "instructions": "1. Combine oats and liquid in a pot. 2. Boil, then simmer for 5 minutes. 3. Stir in honey and cinnamon."
+    },
+    {
+      "title": "Caesar Salad",
+      "estimated_time": "10 minutes",
+      "ingredients": ["1 head Romaine lettuce", "1/2 cup Croutons", "1/4 cup Parmesan", "Caesar dressing"],
+      "instructions": "1. Chop lettuce. 2. Add croutons, parmesan, and dressing. 3. Toss to combine."
+    },
+    {
+      "title": "Baked Salmon",
+      "estimated_time": "20 minutes",
+      "ingredients": ["2 Salmon fillets", "1 tbsp Olive oil", "1 Lemon, sliced", "Dried dill"],
+      "instructions": "1. Drizzle salmon with oil, dill, and lemon slices. 2. Bake at 400°F (200°C) for 12-15 minutes until flaky."
+    },
+    {
+      "title": "Vegetable Fried Rice",
+      "estimated_time": "15 minutes",
+      "ingredients": ["2 cups Cooked rice", "1 cup Frozen peas and carrots", "2 Eggs", "2 tbsp Soy sauce"],
+      "instructions": "1. Sauté vegetables. 2. Scramble eggs in the pan. 3. Add rice and soy sauce; stir-fry on high heat for 3 minutes."
+    },
+    {
+      "title": "French Toast",
+      "estimated_time": "15 minutes",
+      "ingredients": ["2 slices Thick bread", "1 Egg", "1/4 cup Milk", "1/2 tsp Vanilla extract", "Butter"],
+      "instructions": "1. Whisk egg, milk, and vanilla. 2. Dip bread until soaked. 3. Fry in buttered skillet until golden."
+    },
+    {
+      "title": "Beef Stew",
+      "estimated_time": "2 hours",
+      "ingredients": ["500g Beef chunks", "2 Potatoes, cubed", "2 Carrots, sliced", "3 cups Beef broth", "1 Onion"],
+      "instructions": "1. Brown beef. 2. Add vegetables and broth. 3. Simmer on low for 90 minutes until tender."
+    },
+    {
+      "title": "Lentil Soup",
+      "estimated_time": "40 minutes",
+      "ingredients": ["1 cup Dry lentils", "1 Onion", "2 Carrots", "4 cups Vegetable broth", "Cumin"],
+      "instructions": "1. Sauté onion and carrots. 2. Add lentils, broth, and cumin. 3. Simmer for 30 minutes."
+    },
+    {
+      "title": "Egg Salad",
+      "estimated_time": "20 minutes",
+      "ingredients": ["4 Hard-boiled eggs", "3 tbsp Mayonnaise", "1 tsp Mustard", "Green onion"],
+      "instructions": "1. Chop eggs. 2. Mix with mayo, mustard, and green onion. 3. Serve on bread or crackers."
+    },
+    {
+      "title": "BLT Sandwich",
+      "estimated_time": "15 minutes",
+      "ingredients": ["3 slices Bacon", "2 slices Bread", "Lettuce", "Tomato slices", "Mayonnaise"],
+      "instructions": "1. Fry bacon. 2. Toast bread and spread with mayo. 3. Layer lettuce, tomato, and bacon."
+    },
+    {
+      "title": "Chili Con Carne",
+      "estimated_time": "45 minutes",
+      "ingredients": ["500g Ground beef", "1 can Kidney beans", "1 can Diced tomatoes", "1 Onion", "Chili powder"],
+      "instructions": "1. Sauté onion and brown beef. 2. Stir in powder, tomatoes, and beans. 3. Simmer for 25 minutes."
+    },
+    {
+      "title": "Chicken Alfredo",
+      "estimated_time": "25 minutes",
+      "ingredients": ["200g Fettuccine", "1 Chicken breast", "1 cup Heavy cream", "1/2 cup Parmesan"],
+      "instructions": "1. Boil pasta. 2. Cook chicken. 3. Simmer cream and parmesan until thick, then toss with pasta and chicken."
+    },
+    {
+      "title": "Pesto Pasta",
+      "estimated_time": "15 minutes",
+      "ingredients": ["200g Pasta", "1/2 cup Pesto sauce", "Cherry tomatoes", "Parmesan"],
+      "instructions": "1. Boil pasta. 2. Drain and toss with pesto and halved tomatoes. 3. Top with parmesan."
+    },
+    {
+      "title": "Shepherd's Pie",
+      "estimated_time": "50 minutes",
+      "ingredients": ["500g Ground beef", "1 cup Peas", "3 Mashed potatoes", "1/2 cup Gravy"],
+      "instructions": "1. Brown meat, mix with peas and gravy. 2. Top with mashed potatoes in a dish. 3. Bake at 400°F (200°C) for 20 minutes."
+    },
+    {
+      "title": "Sloppy Joes",
+      "estimated_time": "20 minutes",
+      "ingredients": ["500g Ground beef", "1/2 cup Ketchup", "1 tbsp Mustard", "1 tbsp Brown sugar", "4 Burger buns"],
+      "instructions": "1. Brown beef. 2. Stir in ketchup, mustard, and sugar. 3. Simmer for 5 minutes and serve on buns."
+    },
+    {
+      "title": "Baked Ziti",
+      "estimated_time": "45 minutes",
+      "ingredients": ["250g Ziti pasta", "2 cups Marinara sauce", "1 cup Ricotta", "1 cup Mozzarella"],
+      "instructions": "1. Cook pasta halfway. 2. Mix with marinara and ricotta. 3. Top with mozzarella and bake at 375°F (190°C) for 20 minutes."
+    },
+    {
+      "title": "Roasted Chicken Breast",
+      "estimated_time": "30 minutes",
+      "ingredients": ["2 Chicken breasts", "2 tbsp Olive oil", "Garlic powder", "Paprika"],
+      "instructions": "1. Rub chicken with oil and spices. 2. Bake at 400°F (200°C) for 20-25 minutes."
+    },
+    {
+      "title": "Breakfast Burrito",
+      "estimated_time": "15 minutes",
+      "ingredients": ["2 Eggs", "1 Flour tortilla", "1/4 cup Shredded cheese", "Cooked beans"],
+      "instructions": "1. Scramble eggs. 2. Fill tortilla with eggs, cheese, and beans. 3. Roll and sear in a pan for 1 minute."
+    },
+    {
+      "title": "Meatloaf",
+      "estimated_time": "1 hour 15 minutes",
+      "ingredients": ["500g Ground beef", "1/2 cup Breadcrumbs", "1 Egg", "1/4 cup Ketchup"],
+      "instructions": "1. Mix beef, breadcrumbs, egg, and half the ketchup. 2. Shape into loaf and top with remaining ketchup. 3. Bake at 350°F (175°C) for 45-60 minutes."
+    },
+    {
+      "title": "Omelet",
+      "estimated_time": "10 minutes",
+      "ingredients": ["2 Eggs", "1/4 cup Cheese", "1/4 cup Diced peppers", "1 tsp Butter"],
+      "instructions": "1. Whisk eggs. 2. Pour into buttered skillet. 3. Add cheese and peppers to one side, fold, and serve."
+    }
+  ]
+}

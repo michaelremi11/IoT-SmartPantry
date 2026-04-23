@@ -45,10 +45,27 @@ export function subscribePantry(
   return onSnapshot(q, (snap) => callback(mapDoc<PantryItem>(snap)));
 }
 
-/** Subscribe to real-time shopping list updates. */
 export function subscribeShoppingList(
   callback: (items: ShoppingItem[]) => void
 ): Unsubscribe {
   const q = query(collection(db, "shoppingList"), orderBy("addedAt", "desc"));
   return onSnapshot(q, (snap) => callback(mapDoc<ShoppingItem>(snap)));
+}
+
+export interface RecipeItem {
+  id?: string;
+  title: string;
+  ingredients: string[];
+  instructions: string;
+  source: string;
+  estimated_time?: string;
+  created_at?: any; // Firestore Timestamp
+}
+
+/** Subscribe to real-time recipe updates. */
+export function subscribeRecipes(
+  callback: (items: RecipeItem[]) => void
+): Unsubscribe {
+  const q = query(collection(db, "recipes"));
+  return onSnapshot(q, (snap) => callback(mapDoc<RecipeItem>(snap)));
 }
