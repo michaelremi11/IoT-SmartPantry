@@ -1,7 +1,10 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv(os.path.join(os.getcwd(), '.env'))
-print(f'DEBUG: Found INFLUX_TOKEN: {str(os.getenv("INFLUX_TOKEN"))[:5]}... (Length: {len(os.getenv("INFLUX_TOKEN") if os.getenv("INFLUX_TOKEN") else "")})')
+
+# Load .env from project root (resolves regardless of CWD)
+_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+load_dotenv(_env_path)
 
 from fastapi import APIRouter, HTTPException
 from typing import List, Dict, Any
@@ -90,6 +93,7 @@ def get_sustainability_score():
     discarded = 0
     
     for table in tables:
+        for record in table.records:
             if not record.values:
                 continue
             t = record.values.get("action_type")
