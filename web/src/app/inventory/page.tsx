@@ -5,8 +5,8 @@ import { useEffect, useState, useMemo } from "react";
 import { subscribePantry, PantryItem, subscribeRecipes, RecipeItem } from "@/lib/firestore";
 import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 
-const API_BASE_URL = "http://localhost:8000";
-const ANALYTICS_BASE_URL = "http://localhost:8001";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const ANALYTICS_BASE_URL = process.env.NEXT_PUBLIC_ANALYTICS_URL || API_BASE_URL.replace(":8000", ":8001");
 
 export default function InventoryPage() {
   const [activeTab, setActiveTab] = useState<"pantry" | "recipes" | "sustainability" | "analytics">("pantry");
