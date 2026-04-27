@@ -4,7 +4,6 @@ Kivy screen for adding or editing a pantry item.
 Supports manual entry and barcode-scanner pre-fill.
 """
 
-import uuid
 from datetime import datetime, timezone
 
 from kivy.uix.screenmanager import Screen
@@ -13,7 +12,8 @@ from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
 import os
-import httpx
+
+from hub.firebase import get_db
 
 
 class AddItemScreen(Screen):
@@ -21,7 +21,8 @@ class AddItemScreen(Screen):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+        self.collection_name = os.getenv("FIRESTORE_PANTRY_COLLECTION", "pantryItems")
+        self.usage_logs_collection = os.getenv("FIRESTORE_USAGE_LOGS_COLLECTION", "usageLogs")
         self.name = "add_item"
         self._build_ui()
 
@@ -121,15 +122,31 @@ class AddItemScreen(Screen):
             "name": name,
             "barcode": self.barcode_input.text.strip(),
             "quantity": float(qty_str),
+            "amount": float(qty_str),
             "unit": self.unit_input.text.strip() or "unit",
             "expiryDate": self.expiry_input.text.strip(),
             "category": self.category_input.text.strip(),
+            "in_stock": float(qty_str) > 0,
             "addedAt": datetime.now(timezone.utc),
             "updatedAt": datetime.now(timezone.utc),
         }
 
         try:
-            httpx.post(f"{self.api_url}/inventory", json={"name": item["name"], "amount": item["quantity"], "unit": item["unit"], "category": item["category"], "in_stock": True})
+            db = get_db()
+            doc_ref = db.collection(self.collection_name).document()
+            doc_ref.set(item)
+            db.collection(self.usage_logs_collection).document().set({
+                "item_id": doc_ref.id,
+                "item_name": item["name"],
+                "sku": item["barcode"] or None,
+                "event_type": "restocked",
+                "action_type": "restocked",
+                "delta": item["quantity"] or 1,
+                "quantity_changed": item["quantity"] or 1,
+                "quantity_after": item["quantity"],
+                "timestamp": datetime.now(timezone.utc),
+                "source": "kivy-hub",
+            })
             self._clear_fields()
             self.manager.current = "pantry"
         except Exception as exc:

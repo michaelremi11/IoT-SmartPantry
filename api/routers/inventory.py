@@ -1,10 +1,8 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime, timezone
 from ..db.firebase_db import get_firebase_db
-from ..db.influx_db import get_influx_write_api
-from influxdb_client import Point
 import os
 import httpx
 import json
@@ -14,11 +12,13 @@ router = APIRouter(prefix="/inventory", tags=["Inventory"])
 class InventoryItem(BaseModel):
     id: Optional[str] = None
     name: str
-    quantity: float = 0.0
+    quantity: Optional[float] = None
+    amount: Optional[float] = None
     unit: str = "unit"
     category: Optional[str] = ""
     in_stock: bool = True
     expiryDate: Optional[str] = None
+    barcode: Optional[str] = ""
 
 class ActionRequest(BaseModel):
     item_id: str
@@ -39,7 +39,8 @@ def get_all_inventory():
         items.append(InventoryItem(
             id=doc.id,
             name=d.get("name", "Unknown"),
-            quantity=d.get("quantity", 0.0),
+            quantity=d.get("quantity", d.get("amount", 0.0)),
+            amount=d.get("amount", d.get("quantity", 0.0)),
             unit=d.get("unit", "unit"),
             category=d.get("category", ""),
             in_stock=d.get("in_stock", True),
@@ -59,12 +60,17 @@ def add_inventory_item(item: InventoryItem):
         
     collection_name = os.getenv("FIRESTORE_PANTRY_COLLECTION", "pantryItems")
     doc_ref = db.collection(collection_name).document(item.id) if item.id else db.collection(collection_name).document()
+    quantity = item.quantity if item.quantity is not None else (item.amount if item.amount is not None else 0.0)
     data_to_save = {
         "name": item.name,
-        "quantity": item.quantity,
+        "quantity": quantity,
+        "amount": quantity,
         "unit": item.unit,
         "category": item.category,
         "expiryDate": item.expiryDate,
+        "barcode": item.barcode or "",
+        "in_stock": item.in_stock,
+        "addedAt": datetime.now(timezone.utc),
         "updatedAt": datetime.now(timezone.utc)
     }
     print(f'PUSHING TO FIREBASE: {data_to_save}')
@@ -73,7 +79,24 @@ def add_inventory_item(item: InventoryItem):
     except Exception:
         import traceback
         print(traceback.format_exc())
+    db.collection(os.getenv("FIRESTORE_USAGE_LOGS_COLLECTION", "usageLogs")).document().set({
+        "item_id": doc_ref.id,
+        "item_name": item.name,
+        "sku": item.barcode or None,
+        "event_type": "restocked",
+        "action_type": "restocked",
+        "delta": quantity or 1,
+        "quantity_changed": quantity or 1,
+        "quantity_after": quantity,
+        "timestamp": datetime.now(timezone.utc),
+        "source": "api-compat",
+    })
     return {"status": "success", "id": doc_ref.id}
+
+@router.post("/")
+def add_inventory_item_root(item: InventoryItem):
+    """Backward-compatible alias for clients that POST /inventory."""
+    return add_inventory_item(item)
 
 @router.delete("/{item_id}")
 def delete_inventory_item(item_id: str):
@@ -88,7 +111,7 @@ def delete_inventory_item(item_id: str):
 
 @router.post("/action")
 def perform_inventory_action(request: ActionRequest):
-    """Marks an item as cooked or discarded, removes it from Firebase, and logs to InfluxDB."""
+    """Marks an item as cooked or discarded, removes it from Firebase, and logs to Firestore."""
     print(f'BACKEND RECEIVED: {request.item_id}')
     print(f"---> RECEIVED REQUEST [POST /inventory/action]: item_id={request.item_id}, action_type={request.action_type}")
     db = get_firebase_db()
@@ -105,22 +128,20 @@ def perform_inventory_action(request: ActionRequest):
     if not doc.exists:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    # Log to InfluxDB
-    try:
-        write_api = get_influx_write_api()
-        bucket = os.getenv("INFLUX_BUCKET", "pantry_sensors")
-        org = os.getenv("INFLUX_ORG", "pantry-org")
-        
-        point = Point("inventory_action") \
-            .tag("action_type", request.action_type) \
-            .tag("item_id", request.item_id) \
-            .field("quantity_changed", 1.0) \
-            .time(datetime.now(timezone.utc))
-        
-        write_api.write(bucket=bucket, org=org, record=point)
-    except Exception as e:
-        print(f"[InfluxDB] Failed to log action: {e}")
-        # non-fatal for now
+    item_data = doc.to_dict() or {}
+    current_qty = float(item_data.get("quantity", item_data.get("amount", 0)) or 0)
+    db.collection(os.getenv("FIRESTORE_USAGE_LOGS_COLLECTION", "usageLogs")).document().set({
+        "item_id": request.item_id,
+        "item_name": item_data.get("name", request.item_id),
+        "sku": item_data.get("barcode"),
+        "event_type": "consumed" if request.action_type == "cooked" else "expired",
+        "action_type": request.action_type,
+        "delta": current_qty or 1,
+        "quantity_changed": 1,
+        "quantity_after": 0,
+        "timestamp": datetime.now(timezone.utc),
+        "source": "api-compat",
+    })
 
     # Remove from Firebase as requested by user logic
     print(f'PUSHING TO FIREBASE: DELETE {request.item_id}')
@@ -216,40 +237,60 @@ def get_smart_shopping_plan():
     db = get_firebase_db()
     if not db:
         raise HTTPException(status_code=500, detail="Database not configured")
-        
+
     pantry_col = os.getenv("FIRESTORE_PANTRY_COLLECTION", "pantryItems")
     docs = db.collection(pantry_col).stream()
-    
+
     staples = []
     at_risk = []
-    
+
     for doc in docs:
-        d = doc.to_dict()
-        qty = d.get("quantity", 0.0)
+        d = doc.to_dict() or {}
+        qty = d.get("quantity", d.get("amount", 0.0))
         name = d.get("name", "Unknown")
-        
+
         if qty == 0.0:
             staples.append({"item": name, "reason": "Out of stock"})
-            
+
         exp = d.get("expiryDate")
         if exp:
             try:
-                diff = (datetime.strptime(exp, "%Y-%m-%d").replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)).days
+                diff = (
+                    datetime.strptime(exp, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    - datetime.now(timezone.utc)
+                ).days
                 if 0 <= diff <= 3:
                     at_risk.append({"item": name, "reason": f"Expires in {diff} days"})
-            except:
+            except Exception:
                 pass
-                
-    # To get 'Unlocks', normally we would call the recipes unlocker logic. We can mock it here for simplicity
-    # or just make a REST call to itself. For simplicity in the phase, we will return some mock 'High Impact'.
-    unlocks = [
-        {"item": "Olive Oil", "reason": "Unlocks 3 recipes"},
-        {"item": "Garlic", "reason": "Unlocks 2 recipes"}
+
+    unlocks = []
+    recipes_docs = db.collection(os.getenv("FIRESTORE_RECIPES_COLLECTION", "recipes")).stream()
+    pantry_names = [
+        (doc.to_dict() or {}).get("name", "").lower()
+        for doc in db.collection(pantry_col).stream()
     ]
-    
+    from collections import Counter
+
+    missing_counter = Counter()
+    for recipe_doc in recipes_docs:
+        recipe = recipe_doc.to_dict() or {}
+        missing_here = []
+        for ingredient in recipe.get("ingredients", []):
+            lower = str(ingredient).lower()
+            if any(name and (name in lower or lower in name) for name in pantry_names):
+                continue
+            words = str(ingredient).split()
+            missing_here.append((" ".join(words[-2:]) if len(words) > 1 else str(ingredient)).lower())
+        if 1 <= len(missing_here) <= 2:
+            missing_counter.update(missing_here)
+    unlocks = [
+        {"item": name.title(), "reason": f"Unlocks {count} recipes"}
+        for name, count in missing_counter.most_common(3)
+    ]
+
     return {
         "staples": staples,
         "unlocks": unlocks,
-        "waste_prevention": at_risk
+        "waste_prevention": at_risk,
     }
-

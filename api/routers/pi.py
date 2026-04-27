@@ -2,10 +2,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timezone
-from influxdb_client import Point
 import os
 
-from ..db.influx_db import get_influx_write_api
+from ..db.firebase_db import get_firebase_db
 
 router = APIRouter(prefix="/pi", tags=["Raspberry Pi"])
 
@@ -40,27 +39,30 @@ def calculate_comfort_score(temp: float, hum: float) -> int:
 def log_telemetry(payload: TelemetryPayload):
     """
     Receives raw sensor readings from the Pi, calculates Comfort Score,
-    and logs all data to InfluxDB.
+    and logs all data to Firestore.
     """
-    write_api = get_influx_write_api()
-    bucket = os.getenv("INFLUX_BUCKET", "pantry_sensors")
+    db = get_firebase_db()
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not configured")
     
     comfort = calculate_comfort_score(payload.temperatureC, payload.humidityPercent)
-    
-    p = Point("environment_logs") \
-        .tag("device", payload.deviceId) \
-        .field("temperature", payload.temperatureC) \
-        .field("humidity", payload.humidityPercent) \
-        .field("gyro_x", payload.gyro_x) \
-        .field("gyro_y", payload.gyro_y) \
-        .field("gyro_z", payload.gyro_z) \
-        .field("comfort_score", float(comfort)) \
-        .time(payload.timestamp or datetime.now(timezone.utc))
+
+    collection_name = os.getenv("FIRESTORE_LOGS_COLLECTION", "environmentLogs")
+    reading = {
+        "deviceId": payload.deviceId,
+        "temperatureC": payload.temperatureC,
+        "humidityPercent": payload.humidityPercent,
+        "gyro_x": payload.gyro_x,
+        "gyro_y": payload.gyro_y,
+        "gyro_z": payload.gyro_z,
+        "comfort_score": comfort,
+        "timestamp": payload.timestamp or datetime.now(timezone.utc),
+    }
         
     try:
-        write_api.write(bucket=bucket, record=p)
+        db.collection(collection_name).document().set(reading)
     except Exception as e:
-        print(f"Influx write error: {e}")
+        print(f"Firestore write error: {e}")
         return {"status": "warning", "msg": str(e)}
 
     return {"status": "success", "comfort_score": comfort}

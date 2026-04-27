@@ -11,7 +11,8 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.gridlayout import GridLayout
 from kivy.clock import Clock
 import os
-import httpx
+
+from hub.firebase import get_db
 
 
 class PantryScreen(Screen):
@@ -22,7 +23,7 @@ class PantryScreen(Screen):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+        self.collection_name = os.getenv("FIRESTORE_PANTRY_COLLECTION", "pantryItems")
         self.name = "pantry"
         self._build_ui()
         # Refresh inventory every 30 seconds
@@ -51,6 +52,14 @@ class PantryScreen(Screen):
         header.add_widget(add_btn)
         root.add_widget(header)
 
+        self.banner = Label(
+            text="",
+            size_hint_y=None,
+            height=34,
+            color=(0.7, 0.8, 0.9, 1),
+        )
+        root.add_widget(self.banner)
+
         # Scrollable item list
         scroll = ScrollView()
         self.item_grid = GridLayout(
@@ -72,6 +81,19 @@ class PantryScreen(Screen):
         self.add_widget(root)
         self._refresh()
 
+    def set_banner(self, message: str, level: str = "info"):
+        colors = {
+            "info": (0.4, 0.8, 1.0, 1),
+            "success": (0.2, 0.9, 0.4, 1),
+            "warning": (1.0, 0.75, 0.2, 1),
+            "error": (1.0, 0.3, 0.3, 1),
+        }
+        self.banner.color = colors.get(level, colors["info"])
+        self.banner.text = message
+
+    def refresh(self):
+        self._refresh()
+
     def _refresh(self, *_args):
         """Pull the latest inventory from Firestore and repopulate the grid."""
         # Remove all rows below the header (first 4 widgets)
@@ -81,15 +103,17 @@ class PantryScreen(Screen):
             self.item_grid.add_widget(w)
 
         try:
-            res = httpx.get(f"{self.api_url}/inventory", timeout=5.0)
-            res.raise_for_status()
-            docs = res.json()
-            # Sort locally for now
+            db = get_db()
+            docs = []
+            for doc in db.collection(self.collection_name).stream():
+                data = doc.to_dict() or {}
+                data["id"] = doc.id
+                docs.append(data)
             docs.sort(key=lambda x: x.get("name", ""))
             for doc in docs:
                 item = doc
                 item["_id"] = doc.get("id")
-                item["quantity"] = doc.get("amount") # map mapped field
+                item["quantity"] = doc.get("quantity", doc.get("amount", 0))
                 self._add_row(item)
         except Exception as exc:
             self.item_grid.add_widget(
@@ -120,7 +144,8 @@ class PantryScreen(Screen):
     def _on_delete(self, doc_id: str):
         """Delete an item from API and refresh."""
         try:
-            httpx.delete(f"{self.api_url}/inventory/{doc_id}")
+            db = get_db()
+            db.collection(self.collection_name).document(doc_id).delete()
             self._refresh()
         except Exception as exc:
             print(f"[PantryScreen] Delete error: {exc}")

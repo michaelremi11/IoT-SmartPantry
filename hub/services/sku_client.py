@@ -6,18 +6,18 @@ Architecture
 ------------
 
 ONLINE path (Wi-Fi available):
-  Scanner → lookup_sku_async() → GET /lookup/{sku} (FastAPI) → Firestore
-            ↳ result returned to Kivy UI
+  Scanner → auto_add_sku_async() → Open Food Facts → Firestore
+            ↳ pantryItems is created/restocked and usageLogs is appended
 
-OFFLINE path (no network / FastAPI unreachable):
-  Scanner → lookup_sku_async() → network error detected
+OFFLINE path (no network / lookup unreachable):
+  Scanner → auto_add_sku_async() → network error detected
             ↳ scan saved to SQLite cache (hub/data/sku_cache.db)
             ↳ Kivy UI shows "📶 Offline — scan saved" status
 
 SYNC path (network restored):
   Background reconnection monitor detects connectivity
             ↳ Reads all un-synced rows from SQLite
-            ↳ POSTs each queued scan to FastAPI /lookup/{sku}
+            ↳ re-runs product lookup and auto-adds/restocks in Firestore
             ↳ Marks rows as synced (or retires after max_retries)
             ↳ Kivy UI is notified of resync count
 
@@ -35,13 +35,13 @@ SQLite Schema (hub/data/sku_cache.db)
 
 Usage
 -----
-  from hub.services.sku_client import lookup_sku_async, start_sync_monitor
+  from hub.services.sku_client import auto_add_sku_async, start_sync_monitor
 
   # Wire up in App.build():
   start_sync_monitor(on_sync=lambda n: app._on_sync_complete(n))
 
   # On each barcode scan:
-  lookup_sku_async(sku, on_success=..., on_error=...)
+  auto_add_sku_async(sku, on_success=..., on_error=...)
 """
 
 import logging
@@ -55,16 +55,21 @@ from typing import Callable, Optional
 
 from kivy.clock import Clock
 
+from hub.firebase import get_db
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-BRAIN_API_URL    = os.getenv("BRAIN_API_URL", "http://127.0.0.1:8000")
 LOOKUP_TIMEOUT   = float(os.getenv("SKU_LOOKUP_TIMEOUT_S",  "8.0"))
 SYNC_INTERVAL    = int(os.getenv("SKU_SYNC_INTERVAL_S",     "30"))
 MAX_RETRIES      = int(os.getenv("SKU_MAX_RETRIES",          "5"))
+OFF_BASE         = os.getenv("OPEN_FOOD_FACTS_BASE_URL", "https://world.openfoodfacts.org/api/v2/product")
+OFF_FIELDS       = "product_name,quantity,categories_tags,brands,nutriments,image_url"
+PANTRY_COLLECTION = os.getenv("FIRESTORE_PANTRY_COLLECTION", "pantryItems")
+USAGE_LOGS_COLLECTION = os.getenv("FIRESTORE_USAGE_LOGS_COLLECTION", "usageLogs")
 
 # SQLite file lives beside the hub package
 _DB_PATH = Path(os.getenv(
@@ -154,12 +159,12 @@ def pending_scan_count() -> int:
 
 def _is_online() -> bool:
     """
-    Lightweight connectivity test: attempt a TCP connection to the FastAPI host.
-    Returns True if the brain API is reachable.  No HTTP overhead.
+    Lightweight connectivity test against Open Food Facts.
+    Returns True if product lookup is reachable. No HTTP overhead.
     """
     import socket
-    host = BRAIN_API_URL.replace("http://", "").replace("https://", "").split(":")[0]
-    port = 8000
+    host = OFF_BASE.replace("http://", "").replace("https://", "").split("/")[0].split(":")[0]
+    port = 443 if OFF_BASE.startswith("https://") else 80
     try:
         with socket.create_connection((host, port), timeout=2.0):
             return True
@@ -173,16 +178,162 @@ def _is_online() -> bool:
 
 def _do_lookup(sku: str) -> dict:
     """
-    Execute a synchronous GET /lookup/{sku} against the FastAPI service.
+    Execute a synchronous product lookup and cache the response in Firestore.
     Raises an exception on any failure (caller decides how to handle).
     """
     import httpx
-    url = f"{BRAIN_API_URL}/lookup/{sku}"
+    url = f"{OFF_BASE}/{sku}.json?fields={OFF_FIELDS}"
     logger.info("[SKUClient] GET %s", url)
     with httpx.Client(timeout=LOOKUP_TIMEOUT) as client:
         response = client.get(url)
         response.raise_for_status()
-        return response.json()
+        payload = response.json()
+
+    if payload.get("status") != 1:
+        raise httpx.HTTPStatusError(
+            f"SKU '{sku}' not found in Open Food Facts",
+            request=response.request,
+            response=response,
+        )
+
+    product = payload.get("product", {})
+    quantity_str = product.get("quantity") or ""
+    qty_value = None
+    qty_unit = "unit"
+    parts = quantity_str.strip().split()
+    if parts:
+        try:
+            qty_value = float(parts[0].replace(",", "."))
+            qty_unit = parts[1] if len(parts) > 1 else "unit"
+        except ValueError:
+            pass
+
+    categories = product.get("categories_tags", [])
+    category = categories[-1].replace("en:", "").replace("-", " ") if categories else ""
+    result = {
+        "sku": sku,
+        "product_name": product.get("product_name") or "Unknown Product",
+        "quantity": qty_value,
+        "unit": qty_unit,
+        "category": category,
+        "brand": product.get("brands", ""),
+        "image_url": product.get("image_url", ""),
+        "raw_quantity": quantity_str,
+        "updatedAt": datetime.now(timezone.utc),
+    }
+
+    try:
+        get_db().collection("productLookups").document(sku).set(result, merge=True)
+    except Exception as exc:
+        logger.warning("[SKUClient] Lookup succeeded but Firestore cache failed: %s", exc)
+
+    return result
+
+
+def _quantity_from_lookup(data: dict) -> float:
+    """Use package quantity when available, otherwise count one scanned item."""
+    qty = data.get("quantity")
+    try:
+        if qty is not None and float(qty) > 0:
+            return float(qty)
+    except (TypeError, ValueError):
+        pass
+    return 1.0
+
+
+def add_lookup_to_inventory(data: dict, source: str = "barcode-scan") -> dict:
+    """
+    Add a looked-up barcode item directly to Firestore inventory.
+
+    If an in-stock pantry item already has the same barcode, this restocks that
+    item by incrementing quantity/amount. Otherwise it creates a new pantry item.
+    Always appends a usageLogs restocked event.
+    """
+    db = get_db()
+    sku = str(data.get("sku", "")).strip()
+    name = data.get("product_name") or "Unknown Product"
+    unit = data.get("unit") or "unit"
+    quantity_to_add = _quantity_from_lookup(data)
+    now = datetime.now(timezone.utc)
+
+    existing_docs = []
+    if sku:
+        existing_docs = list(
+            db.collection(PANTRY_COLLECTION)
+            .where("barcode", "==", sku)
+            .limit(1)
+            .stream()
+        )
+
+    if existing_docs:
+        doc = existing_docs[0]
+        current = doc.to_dict() or {}
+        current_qty = float(current.get("quantity", current.get("amount", 0)) or 0)
+        new_qty = current_qty + quantity_to_add
+        doc.reference.set(
+            {
+                "name": current.get("name") or name,
+                "barcode": sku,
+                "quantity": new_qty,
+                "amount": new_qty,
+                "unit": current.get("unit") or unit,
+                "category": current.get("category") or data.get("category") or "misc",
+                "brand": current.get("brand") or data.get("brand", ""),
+                "image_url": current.get("image_url") or data.get("image_url", ""),
+                "in_stock": True,
+                "updatedAt": now,
+                "source": current.get("source") or source,
+            },
+            merge=True,
+        )
+        item_id = doc.id
+        action = "restocked"
+    else:
+        doc_ref = db.collection(PANTRY_COLLECTION).document()
+        doc_ref.set(
+            {
+                "name": name,
+                "barcode": sku,
+                "quantity": quantity_to_add,
+                "amount": quantity_to_add,
+                "unit": unit,
+                "category": data.get("category") or "misc",
+                "brand": data.get("brand", ""),
+                "image_url": data.get("image_url", ""),
+                "expiryDate": None,
+                "in_stock": True,
+                "addedAt": now,
+                "updatedAt": now,
+                "source": source,
+            }
+        )
+        item_id = doc_ref.id
+        action = "created"
+
+    db.collection(USAGE_LOGS_COLLECTION).document().set(
+        {
+            "item_id": item_id,
+            "item_name": name,
+            "sku": sku or None,
+            "event_type": "restocked",
+            "action_type": "restocked",
+            "delta": quantity_to_add,
+            "quantity_changed": quantity_to_add,
+            "quantity_after": quantity_to_add if action == "created" else new_qty,
+            "timestamp": now,
+            "source": source,
+        }
+    )
+
+    return {
+        "status": "success",
+        "action": action,
+        "id": item_id,
+        "sku": sku,
+        "name": name,
+        "quantity_added": quantity_to_add,
+        "unit": unit,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +350,7 @@ def lookup_sku_async(
     Fire-and-forget SKU lookup with automatic offline fallback.
 
     Flow:
-      1. Attempt GET /lookup/{sku} against the local FastAPI service.
+      1. Attempt Open Food Facts lookup and cache the result in Firestore.
       2. On success → call on_success(data) on the Kivy main thread.
       3. On network error:
            a. Save scan to SQLite cache via _enqueue_scan().
@@ -248,6 +399,49 @@ def lookup_sku_async(
     t.start()
 
 
+def auto_add_sku_async(
+    sku: str,
+    on_success: Callable[[dict], None],
+    on_error: Optional[Callable[[str], None]] = None,
+    on_offline: Optional[Callable[[str], None]] = None,
+) -> None:
+    """
+    Fire-and-forget barcode lookup plus inventory write.
+
+    This is the scanner-first path: one scan ending in Enter looks up the UPC,
+    adds or restocks the matching pantry item, logs the restock event, and then
+    calls on_success on the Kivy main thread.
+    """
+    def _worker():
+        try:
+            lookup = _do_lookup(sku)
+            result = add_lookup_to_inventory(lookup, source="kivy-barcode-scan")
+            result["lookup"] = lookup
+            logger.info("[SKUClient] ✅ Auto-added %s (%s)", result["name"], sku)
+            Clock.schedule_once(lambda dt: on_success(result))
+
+        except Exception as exc:
+            error_str = str(exc)
+            logger.error("[SKUClient] ❌ Auto-add failed for %s: %s", sku, error_str)
+            is_network_error = _classify_network_error(exc)
+
+            if is_network_error:
+                _enqueue_scan(sku)
+                msg = (
+                    f"📶 Offline — '{sku}' saved locally. "
+                    f"Will auto-add when connection is restored. "
+                    f"({pending_scan_count()} scan(s) queued)"
+                )
+                callback = on_offline or on_error
+                if callback:
+                    Clock.schedule_once(lambda dt: callback(msg))
+            elif on_error:
+                Clock.schedule_once(lambda dt: on_error(error_str))
+
+    t = threading.Thread(target=_worker, daemon=True, name=f"sku-auto-add-{sku[:8]}")
+    t.start()
+
+
 def _classify_network_error(exc: Exception) -> bool:
     """
     Return True for errors that indicate network unavailability.
@@ -288,7 +482,7 @@ def start_sync_monitor(
 ) -> None:
     """
     Start a background thread that periodically checks for connectivity and,
-    when online, flushes pending SQLite scans to the FastAPI service.
+    when online, flushes pending SQLite scans to Open Food Facts/Firestore.
 
     Call once from App.build() after the Kivy window exists.
 
@@ -327,7 +521,7 @@ def _run_sync_cycle(on_sync: Optional[Callable[[int], None]]):
     """
     One sync cycle:
       1. Check connectivity.
-      2. If online: attempt to POST each pending scan to FastAPI.
+      2. If online: attempt to look up and auto-add each pending scan.
       3. Mark successful rows as synced; increment retry count on failures.
       4. Invoke on_sync callback if any scans were flushed.
     """
@@ -350,7 +544,8 @@ def _run_sync_cycle(on_sync: Optional[Callable[[int], None]]):
 
     for row_id, sku, retry_count in pending:
         try:
-            _do_lookup(sku)  # This also writes to Firestore (side-effect in FastAPI)
+            lookup = _do_lookup(sku)
+            add_lookup_to_inventory(lookup, source="kivy-offline-sync")
             _mark_synced(conn, row_id)
             synced_count += 1
             logger.info("[SKUClient]   ✅ Synced queued scan: %s", sku)

@@ -17,8 +17,8 @@ BUY LESS  (high expiration rate)
 
 Algorithm
 ---------
-Both signals are derived solely from the `usage_logs` Firestore collection.
-Each document in `usage_logs` must follow the schema in docs/firestore_schema.md:
+Both signals are derived solely from the `usageLogs` Firestore collection.
+Each document in `usageLogs` must follow the schema in docs/firestore_schema.md:
 
   {
     "sku":         str,           # barcode / product SKU

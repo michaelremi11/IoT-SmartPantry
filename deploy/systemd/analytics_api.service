@@ -1,7 +1,7 @@
 # /etc/systemd/system/analytics_api.service
 #
-# Smart Pantry — FastAPI Analytics & Brain Service
-# Runs the uvicorn ASGI server hosting the FastAPI application.
+# Smart Pantry — Firebase Worker & Diagnostics Service
+# Runs the uvicorn ASGI server and the Firestore polling worker.
 #
 # Install:
 #   sudo cp deploy/systemd/analytics_api.service /etc/systemd/system/
@@ -15,7 +15,7 @@
 #   curl http://localhost:8000/health
 
 [Unit]
-Description=Smart Pantry FastAPI Analytics & Brain Service
+Description=Smart Pantry Firebase Worker & Diagnostics Service
 Documentation=https://github.com/your-org/IoT-SmartPantry
 # Start after the network is up; Firestore calls need internet (or emulator)
 After=network-online.target
@@ -31,8 +31,8 @@ WorkingDirectory=/home/pi/IoT-SmartPantry
 EnvironmentFile=/home/pi/IoT-SmartPantry/.env
 
 # Uvicorn settings — single worker is correct for Pi 4 (saves RAM)
-# Bind only to loopback; Kivy hub and web dashboard connect locally.
-# To expose externally, change to 0.0.0.0 and add a firewall rule.
+# Bind only to loopback; normal clients use Firebase directly.
+# To expose diagnostics externally, change to 0.0.0.0 and add a firewall rule.
 ExecStart=/home/pi/IoT-SmartPantry/venv/bin/uvicorn analytics.main:app \
     --host 127.0.0.1 \
     --port 8000 \
@@ -50,7 +50,7 @@ StartLimitBurst=5
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=analytics-api
+SyslogIdentifier=firebase-worker
 
 # Cap memory — FastAPI + Firestore client + pandas should stay well under 256 MB
 MemoryMax=384M

@@ -10,7 +10,8 @@ import logging
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-import httpx
+
+from hub.firebase import get_db
 
 load_dotenv()
 
@@ -32,10 +33,14 @@ class EnvironmentLogger:
     DEVICE_ID = os.getenv("HUB_DEVICE_ID", "hub-rpi4-001")
     INTERVAL = int(os.getenv("HUB_TEMP_LOG_INTERVAL_SECONDS", "300"))
 
-    API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
-
     def __init__(self):
         self.sense = SenseHat() if _SENSE_AVAILABLE else None
+
+    @staticmethod
+    def _comfort_score(temp: float, humidity: float) -> int:
+        temp_score = max(0, min(100, 100 - abs(temp - 21.0) * 10))
+        hum_score = max(0, min(100, 100 - abs(humidity - 45.0) * 3.33))
+        return int((temp_score * 0.6) + (hum_score * 0.4))
 
     def _read(self) -> dict:
         if self.sense:
@@ -51,6 +56,7 @@ class EnvironmentLogger:
             "deviceId": self.DEVICE_ID,
             "temperatureC": temp,
             "humidityPercent": humidity,
+            "comfort_score": self._comfort_score(temp, humidity),
             "timestamp": datetime.now(timezone.utc),
         }
 
@@ -58,16 +64,14 @@ class EnvironmentLogger:
         """Read sensors and push one record to API. Returns the record."""
         reading = self._read()
         try:
-            # Send reading to Central API which routes to InfluxDB
-            reading["timestamp"] = reading["timestamp"].isoformat()
-            res = httpx.post(f"{self.API_URL}/sensors/log", json=reading, timeout=5.0)
-            res.raise_for_status()
+            db = get_db()
+            db.collection(self.COLLECTION).document().set(reading)
             logger.info(
-                f"[SenseHAT] API Logged: {reading['temperatureC']}°C / "
+                f"[SenseHAT] Firestore logged: {reading['temperatureC']}°C / "
                 f"{reading['humidityPercent']}% RH"
             )
         except Exception as exc:
-            logger.error(f"[SenseHAT] API Error log_once: {exc}")
+            logger.error(f"[SenseHAT] Firestore error log_once: {exc}")
         return reading
 
     def run_loop(self):

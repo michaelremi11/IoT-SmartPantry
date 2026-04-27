@@ -179,6 +179,19 @@ def cook_recipe(recipe_id: str):
                 new_qty = max(0.0, current_qty - amount_to_deduct)
                 
                 db.collection(pantry_col).document(pid).set({"amount": new_qty, "quantity": new_qty}, merge=True)
+                db.collection(os.getenv("FIRESTORE_USAGE_LOGS_COLLECTION", "usageLogs")).document().set({
+                    "item_id": pid,
+                    "item_name": item_data.get("name", pid),
+                    "recipe_id": recipe_id,
+                    "recipe_title": recipe_data.get("title", recipe_id),
+                    "event_type": "consumed",
+                    "action_type": "cooked",
+                    "delta": amount_to_deduct,
+                    "quantity_changed": 1,
+                    "quantity_after": new_qty,
+                    "timestamp": datetime.now(timezone.utc),
+                    "source": "api-compat",
+                })
                 pantry_items[pid]["amount"] = new_qty
                 pantry_items[pid]["quantity"] = new_qty
                 

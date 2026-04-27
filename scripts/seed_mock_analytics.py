@@ -15,7 +15,7 @@ Run from project root:
 
 Flags:
   --dry-run  : Print documents instead of writing to Firestore
-  --wipe     : Delete all existing usage_logs and pantryItems before seeding
+  --wipe     : Delete all existing usageLogs and pantryItems before seeding
 
 Requirements: firebase-admin, python-dotenv
 """
@@ -263,8 +263,8 @@ def init_firestore():
 
 
 def wipe_collections(db):
-    print("🗑️  Wiping existing usage_logs and test pantryItems…")
-    for doc in db.collection("usage_logs").stream():
+    print("🗑️  Wiping existing usageLogs and test pantryItems…")
+    for doc in db.collection("usageLogs").stream():
         doc.reference.delete()
     for item in ITEMS:
         db.collection("pantryItems").document(item["id"]).delete()
@@ -286,7 +286,7 @@ def seed_pantry_items(db, dry_run: bool):
 
 
 def seed_usage_logs(db, events_by_item: dict[str, list[dict]], dry_run: bool):
-    print("📊 Seeding usage_logs…")
+    print("📊 Seeding usageLogs…")
     total = 0
     for item_id, events in events_by_item.items():
         item_name = next(i["name"] for i in ITEMS if i["id"] == item_id)
@@ -295,7 +295,7 @@ def seed_usage_logs(db, events_by_item: dict[str, list[dict]], dry_run: bool):
             if dry_run:
                 print("   [DRY RUN]", json.dumps(evt, default=str))
             else:
-                db.collection("usage_logs").add(evt)
+                db.collection("usageLogs").add(evt)
             total += 1
     print(f"\n   Total events written: {total}\n")
 

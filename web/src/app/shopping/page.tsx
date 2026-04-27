@@ -2,84 +2,86 @@
 // Remote shopping list viewer — real-time Firestore subscription.
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  addBarcodeToShoppingList,
+  addShoppingItem,
+  requestSmartShoppingPlan,
+  SmartShoppingPlan,
+  subscribeSmartShoppingPlan,
   subscribeShoppingList,
   ShoppingItem,
+  toggleShoppingItemChecked,
 } from "@/lib/firestore";
-import {
-  doc,
-  updateDoc,
-  addDoc,
-  collection,
-  serverTimestamp,
-} from "firebase/firestore";
-import { db } from "@/lib/firebase";
 
 export default function ShoppingPage() {
   const [items, setItems] = useState<ShoppingItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [newItem, setNewItem] = useState("");
-  const [smartPlan, setSmartPlan] = useState<any>(null);
+  const [scanUpc, setScanUpc] = useState("");
+  const [scanStatus, setScanStatus] = useState("");
+  const [scanBusy, setScanBusy] = useState(false);
+  const scanInputRef = useRef<HTMLInputElement | null>(null);
+  const [smartPlan, setSmartPlan] = useState<SmartShoppingPlan | null>(null);
   const [generating, setGenerating] = useState(false);
-
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
   useEffect(() => {
     const unsub = subscribeShoppingList((data) => {
       setItems(data);
       setLoading(false);
     });
-    return () => unsub();
+    const unsubPlan = subscribeSmartShoppingPlan(setSmartPlan);
+    return () => {
+      unsub();
+      unsubPlan();
+    };
   }, []);
 
   const toggleChecked = async (item: ShoppingItem) => {
-    const isNowChecked = !item.checked;
-    await updateDoc(doc(db, "shoppingList", item.id), {
-      checked: isNowChecked,
-    });
-    
-    // Auto-restock if we checked it off
-    if (isNowChecked) {
-      try {
-        await fetch(`${API_URL}/inventory`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-             name: item.name,
-             category: "misc",
-             amount: 1,
-             quantity: 1,
-             unit: "unit",
-             in_stock: true,
-             expiryDate: null
-          })
-        });
-      } catch(e) {
-        console.error("Failed to restock item", e);
-      }
+    try {
+      await toggleShoppingItemChecked(item);
+    } catch (error) {
+      console.error("Failed to update shopping item", error);
+      window.alert("Could not update this shopping item. Please try again.");
     }
   };
 
   const addItem = async () => {
     const name = newItem.trim();
     if (!name) return;
-    await addDoc(collection(db, "shoppingList"), {
+    await addShoppingItem({
       name,
-      quantity: 1,
+      unit: "unit",
       addedBy: "web-dashboard",
-      checked: false,
-      addedAt: serverTimestamp(),
     });
     setNewItem("");
+  };
+
+  const handleBarcodeScan = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const upc = scanUpc.trim();
+    if (!upc || scanBusy) return;
+
+    setScanBusy(true);
+    setScanStatus(`Looking up UPC ${upc}...`);
+    try {
+      const result = await addBarcodeToShoppingList(upc);
+      const verb = result.action === "incremented" ? "Updated" : "Added";
+      setScanStatus(`${verb}: ${result.name} (+${result.quantity_added})`);
+      setScanUpc("");
+    } catch (error) {
+      console.error("Shopping barcode scan failed", error);
+      setScanStatus(error instanceof Error ? error.message : "Could not add that UPC.");
+    } finally {
+      setScanBusy(false);
+      requestAnimationFrame(() => scanInputRef.current?.focus());
+    }
   };
 
   const generateSmartPlan = async () => {
     setGenerating(true);
     try {
-      const res = await fetch(`${API_URL}/shopping/smart-plan`);
-      const data = await res.json();
-      setSmartPlan(data);
+      await requestSmartShoppingPlan();
     } catch(e) {
       console.error(e);
     } finally {
@@ -88,12 +90,9 @@ export default function ShoppingPage() {
   };
 
   const addPlanItem = async (name: string) => {
-    await addDoc(collection(db, "shoppingList"), {
+    await addShoppingItem({
       name,
-      quantity: 1,
       addedBy: "analytics-auto",
-      checked: false,
-      addedAt: serverTimestamp(),
     });
   };
 
@@ -102,8 +101,37 @@ export default function ShoppingPage() {
       <div className="max-w-2xl mx-auto">
         <h1 className="text-3xl font-bold text-sky-400 mb-2">🛒 Shopping List</h1>
         <p className="text-gray-400 mb-6">
-          Add items here — they'll appear on the kitchen hub instantly
+          Add items here — they&apos;ll appear on the kitchen hub instantly
         </p>
+
+        <form onSubmit={handleBarcodeScan} className="mb-5 bg-sky-950/20 border border-sky-900/50 rounded-xl p-4 flex flex-col sm:flex-row gap-3 items-end">
+          <div className="flex-1 w-full">
+            <label className="block text-xs font-medium text-sky-300 mb-1">Barcode Scanner</label>
+            <input
+              ref={scanInputRef}
+              autoFocus
+              inputMode="numeric"
+              pattern="[0-9]*"
+              type="text"
+              placeholder="Scan UPC to add to shopping list..."
+              value={scanUpc}
+              onChange={(e) => setScanUpc(e.target.value.replace(/\D/g, ""))}
+              className="w-full px-4 py-2 rounded-lg bg-gray-900 border border-sky-800 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            />
+            {scanStatus && (
+              <p className={`mt-2 text-xs ${scanStatus.includes("Added") || scanStatus.includes("Updated") ? "text-emerald-400" : "text-sky-300"}`}>
+                {scanStatus}
+              </p>
+            )}
+          </div>
+          <button
+            type="submit"
+            disabled={scanBusy || !scanUpc.trim()}
+            className="w-full sm:w-auto bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium px-4 py-2 rounded-lg transition"
+          >
+            {scanBusy ? "Adding..." : "Scan Add"}
+          </button>
+        </form>
 
         <div className="flex flex-col sm:flex-row gap-4 mb-6">
           <button 
@@ -144,7 +172,7 @@ export default function ShoppingPage() {
                <div>
                   <h3 className="font-bold text-xs uppercase text-gray-500 mb-2">Restock Staples</h3>
                   <ul className="space-y-2">
-                    {smartPlan.staples?.map((i: any, idx: number) => (
+                    {smartPlan.staples?.map((i, idx) => (
                       <li key={idx} className="flex justify-between items-center text-sm bg-gray-900 p-2 rounded">
                         <span className="text-gray-300 truncate pr-2">{i.item}</span>
                         <button onClick={()=>addPlanItem(i.item)} className="bg-sky-900/50 hover:bg-sky-800 text-sky-400 px-2 py-1 rounded text-xs">+</button>
@@ -155,7 +183,7 @@ export default function ShoppingPage() {
                <div>
                   <h3 className="font-bold text-xs uppercase text-gray-500 mb-2">High Impact Unlocks</h3>
                   <ul className="space-y-2">
-                    {smartPlan.unlocks?.map((i: any, idx: number) => (
+                    {smartPlan.unlocks?.map((i, idx) => (
                       <li key={idx} className="flex justify-between items-center text-sm bg-gray-900 p-2 rounded">
                         <span className="text-emerald-400 truncate pr-2">{i.item}</span>
                         <button onClick={()=>addPlanItem(i.item)} className="bg-sky-900/50 hover:bg-sky-800 text-sky-400 px-2 py-1 rounded text-xs">+</button>
@@ -166,7 +194,7 @@ export default function ShoppingPage() {
                <div>
                   <h3 className="font-bold text-xs uppercase text-gray-500 mb-2">Waste Prevention</h3>
                   <ul className="space-y-2">
-                    {smartPlan.waste_prevention?.map((i: any, idx: number) => (
+                    {smartPlan.waste_prevention?.map((i, idx) => (
                       <li key={idx} className="flex justify-between items-center text-sm bg-gray-900 p-2 rounded">
                         <span className="text-amber-400 truncate pr-2" title={i.reason}>{i.item}</span>
                         <button className="bg-amber-900/30 text-amber-500 px-2 py-1 rounded text-[10px]" disabled>Cook It!</button>
@@ -206,8 +234,14 @@ export default function ShoppingPage() {
                 <span className={item.checked ? "line-through text-gray-500" : ""}>
                   {item.name}
                 </span>
+                <span className="text-xs text-gray-500">
+                  {item.quantity || 1}{item.unit && item.unit !== "unit" ? ` ${item.unit}` : ""}
+                </span>
                 {item.addedBy === "analytics-auto" && (
                   <span className="ml-auto text-xs text-amber-400">📊 auto</span>
+                )}
+                {item.addedBy === "barcode-scan" && (
+                  <span className="ml-auto text-xs text-sky-400">scan</span>
                 )}
               </li>
             ))}

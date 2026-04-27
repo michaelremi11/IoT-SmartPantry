@@ -37,45 +37,11 @@ def test_firebase():
         print(f"❌ ERROR: Failed to connect to Firebase: {e}")
         return False
 
-def test_influxdb():
-    print("\n--- Testing InfluxDB Connection ---")
-    
-    url = os.getenv("INFLUX_URL")
-    org = os.getenv("INFLUX_ORG")
-    bucket = os.getenv("INFLUX_BUCKET")
-    token = os.getenv("INFLUX_TOKEN")
-    
-    print(f"INFLUX_URL: {url}")
-    print(f"INFLUX_ORG: {org}")
-    print(f"INFLUX_BUCKET: {bucket}")
-    print(f"INFLUX_TOKEN: {'[SET]' if token else '[MISSING]'}")
-
-    if not all([url, org, bucket, token]):
-        print("❌ ERROR: Missing one or more InfluxDB configuration variables in .env.")
-        return False
-
-    try:
-        import httpx
-        health_url = f"{url.rstrip('/')}/health"
-        res = httpx.get(health_url, timeout=5.0)
-        
-        if res.status_code == 200:
-            print(f"✅ Successful Connection to InfluxDB! ({health_url} returned 200 OK)")
-            return True
-        else:
-            print(f"❌ ERROR: InfluxDB returned status {res.status_code}: {res.text}")
-            return False
-            
-    except Exception as e:
-        print(f"❌ ERROR: Failed to reach InfluxDB: {e}")
-        return False
-
 if __name__ == "__main__":
     fb_ok = test_firebase()
-    in_ok = test_influxdb()
     
-    if not fb_ok or not in_ok:
+    if not fb_ok:
         print("\n[Tests Failed]")
         sys.exit(1)
     else:
-        print("\n[Tests Passed Successfully]")
+        print("\n[Firebase Test Passed Successfully]")

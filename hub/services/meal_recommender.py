@@ -29,7 +29,8 @@ import json
 import logging
 import os
 import re
-from typing import Optional
+
+from hub.firebase import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ _USER_PART = (
 FULL_PROMPT_TEMPLATE = _SYSTEM_PROMPT + _USER_PART
 
 
-def get_meal_recommendations(db, max_items: int = 20) -> list[dict]:
+def get_meal_recommendations(db=None, max_items: int = 20) -> list[dict]:
     """
     Query Firestore for in-stock items, build a structured prompt, call
     Ollama, and return a list of up to 3 recipe dicts.
@@ -81,14 +82,12 @@ def get_meal_recommendations(db, max_items: int = 20) -> list[dict]:
     RuntimeError  if Ollama is unreachable or returns unparseable output.
     """
     # ── 1. Fetch in-stock inventory ────────────────────────────────────
-    API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
-    import httpx
     try:
-        res = httpx.get(f"{API_URL}/inventory")
-        res.raise_for_status()
-        docs = res.json()
+        db = db or get_db()
+        collection_name = os.getenv("FIRESTORE_PANTRY_COLLECTION", "pantryItems")
+        docs = [doc.to_dict() or {} for doc in db.collection(collection_name).stream()]
     except Exception as exc:
-        logger.warning("[MealRecommender] Could not fetch inventory from API: %s", exc)
+        logger.warning("[MealRecommender] Could not fetch inventory from Firestore: %s", exc)
         return []
 
     in_stock_items = []
@@ -96,7 +95,7 @@ def get_meal_recommendations(db, max_items: int = 20) -> list[dict]:
         if not data.get("in_stock", True):
             continue
         name    = data.get("name", "Unknown")
-        amount  = data.get("amount", "?")
+        amount  = data.get("quantity", data.get("amount", "?"))
         unit    = data.get("unit", "unit")
         in_stock_items.append(f"{name} ({amount} {unit})")
 

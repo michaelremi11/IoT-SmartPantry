@@ -14,11 +14,9 @@
 [Unit]
 Description=Smart Pantry Kivy Hub UI
 Documentation=https://github.com/your-org/IoT-SmartPantry
-# Wait for network and the local analytics API to be ready
-After=network-online.target analytics_api.service
+# Wait for network; hub talks directly to Firebase.
+After=network-online.target
 Wants=network-online.target
-# If the analytics API is available, start after it; but don't require it
-# (hub can operate offline with SQLite fallback)
 PartOf=smart-pantry.target
 
 [Service]

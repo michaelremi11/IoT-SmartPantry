@@ -34,7 +34,7 @@ Integration
               self.wedge.detach()
 
           def _on_barcode(self, sku: str):
-              # sku is already stripped; send it to the FastAPI brain
+              # sku is already stripped; send it to the inventory lookup flow
               ...
 """
 

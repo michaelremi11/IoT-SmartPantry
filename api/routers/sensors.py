@@ -2,10 +2,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timezone
-from influxdb_client import Point
 import os
 
-from ..db.influx_db import get_influx_write_api
+from ..db.firebase_db import get_firebase_db
 
 router = APIRouter(prefix="/sensors", tags=["Sensors"])
 
@@ -18,30 +17,38 @@ class SensorPayload(BaseModel):
     gyro_z: Optional[float] = 0.0
     timestamp: Optional[datetime] = None
 
+def calculate_comfort_score(temp: float, hum: float) -> int:
+    temp_score = max(0, min(100, 100 - abs(temp - 21.0) * 10))
+    hum_score = max(0, min(100, 100 - abs(hum - 45.0) * 3.33))
+    return int((temp_score * 0.6) + (hum_score * 0.4))
+
 @router.post("/log")
 def log_sensor_data(payload: SensorPayload):
     """
-    Writes Pi telemetry to InfluxDB, serving as the central funnel 
-    so the Pi doesn't write direct to the database.
+    Compatibility endpoint for Pi telemetry.
+
+    New hub code writes directly to Firestore, but this route is kept for older
+    scripts and writes to the same Firebase collection.
     """
-    write_api = get_influx_write_api()
-    bucket = os.getenv("INFLUX_BUCKET", "pantry_sensors")
-    
-    # Write to Influx time-series!
-    p = Point("environment_logs") \
-        .tag("device", payload.deviceId) \
-        .field("temperature", payload.temperatureC) \
-        .field("humidity", payload.humidityPercent) \
-        .field("gyro_x", payload.gyro_x) \
-        .field("gyro_y", payload.gyro_y) \
-        .field("gyro_z", payload.gyro_z) \
-        .time(payload.timestamp or datetime.now(timezone.utc))
-        
+    db = get_firebase_db()
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not configured")
+
+    collection_name = os.getenv("FIRESTORE_LOGS_COLLECTION", "environmentLogs")
+    reading = {
+        "deviceId": payload.deviceId,
+        "temperatureC": payload.temperatureC,
+        "humidityPercent": payload.humidityPercent,
+        "gyro_x": payload.gyro_x,
+        "gyro_y": payload.gyro_y,
+        "gyro_z": payload.gyro_z,
+        "comfort_score": calculate_comfort_score(payload.temperatureC, payload.humidityPercent),
+        "timestamp": payload.timestamp or datetime.now(timezone.utc),
+    }
     try:
-        write_api.write(bucket=bucket, record=p)
+        db.collection(collection_name).document().set(reading)
     except Exception as e:
-        print(f"Influx write error: {e}")
-        # Soft fail if DB isn't running yet locally
+        print(f"Firestore write error: {e}")
         return {"status": "warning", "msg": str(e)}
 
     return {"status": "success"}

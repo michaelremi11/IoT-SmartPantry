@@ -6,7 +6,7 @@
 
 ## Overview
 
-Smart Pantry + Kitchen Hub is an IoT-driven system that connects your physical kitchen — via a Raspberry Pi 4 touchscreen terminal — to a cloud-synced dashboard and an intelligent analytics backend. The system helps households:
+Smart Pantry + Kitchen Hub is an IoT-driven system that connects your physical kitchen — via a Raspberry Pi 4 touchscreen terminal — to Firebase-backed web/mobile clients and an intelligent background worker. The system helps households:
 
 - 📦 **Track pantry inventory** in real time via barcode scanning and manual entry
 - 🌡️ **Monitor environmental conditions** (temperature, humidity) using the Sense HAT
@@ -22,22 +22,26 @@ Smart Pantry + Kitchen Hub is an IoT-driven system that connects your physical k
 ```
 IoT-SmartPantry/
 │
-├── hub/                  # Raspberry Pi 4 (Python + Kivy UI)
+├── hub/                  # Raspberry Pi 4 (Python + Kivy UI, direct Firestore)
 │   ├── firebase/         # Firebase Admin SDK init
 │   ├── ui/               # Kivy touchscreen CRUD screens
 │   ├── sensors/          # Sense HAT temp/humidity logging
 │   └── scanner/          # USB barcode scanner input handler
 │
-├── web/                  # Next.js remote dashboard
+├── web/                  # Next.js remote dashboard (direct Firebase client)
 │   ├── src/
 │   │   ├── lib/          # Firebase client SDK init
 │   │   └── app/          # App Router pages (inventory, shopping)
 │   └── .env.local        # Web-specific Firebase env vars
 │
-├── analytics/            # Python FastAPI analytics microservice
+├── analytics/            # FastAPI diagnostics + Firebase worker
 │   ├── firebase/         # Firebase Admin SDK init
 │   ├── models/           # Consumption rate & forecasting logic
+│   ├── services/         # Firebase-backed analytics builders
+│   ├── worker.py         # Recipe/smart-plan request processor
 │   └── main.py           # FastAPI entry point
+│
+├── api/                  # Legacy/compat FastAPI routes, Firestore-only
 │
 ├── .env.example          # Template for all Firebase credentials
 └── README.md
@@ -54,8 +58,48 @@ IoT-SmartPantry/
 | Barcode     | USB HID scanner (evdev / pynput)        |
 | Cloud DB    | Firebase Firestore                      |
 | Auth        | Firebase Authentication                 |
-| Web         | Next.js 14, Firebase JS SDK v10         |
+| Web         | Next.js 16, Firebase JS SDK             |
 | Analytics   | Python FastAPI, Pandas, Firebase Admin  |
+
+---
+
+## Current Data Flow
+
+```
+Web / future mobile app / Pi hub
+  ├─ read and write normal app state directly in Firestore
+  └─ create request documents for heavy work
+
+Firebase Firestore
+  ├─ pantryItems, shoppingList, recipes
+  ├─ usageLogs, environmentLogs
+  ├─ recipeRequests, smartPlanRequests
+  └─ analyticsSummaries, smartShoppingPlans
+
+Firebase worker service
+  ├─ polls pending request documents
+  ├─ calls local Ollama for recipe generation
+  ├─ computes analytics from Firestore
+  └─ writes results back to Firestore
+```
+
+The web app no longer calls the backend for inventory, shopping list, cooking/discarding, recipe discovery, smart shopping plans, or analytics reads. It uses Firestore subscriptions and writes. The backend remains for background processing and optional diagnostic/compatibility HTTP endpoints.
+
+---
+
+## Barcode Auto-Add
+
+USB barcode scanners that operate in keyboard-wedge mode are supported. The scanner sends the UPC followed by Enter.
+
+- On the Pi hub, a scan is captured globally, looked up through Open Food Facts, and auto-added to Firestore.
+- On the web inventory page, scan an item you physically have. It is added/restocked in `pantryItems`.
+- On the web shopping page, scan an item you want to buy. It is added/incremented in `shoppingList`.
+- If the UPC already exists in `pantryItems`, the scan restocks that item instead of creating a duplicate.
+- If the UPC or normalized name already exists as an unchecked shopping item, the shopping scan/suggestion increments that item instead of creating a duplicate.
+- Each successful scan writes a `usageLogs` restock event for analytics.
+- UPC metadata is cached in `productLookups` when rules allow it.
+
+Expiry dates are not available from UPC databases, so scanned items are added with `expiryDate: null` and can be edited later.
 
 ---
 
@@ -92,11 +136,11 @@ npm install
 npm run dev
 ```
 
-### 4. Analytics Service
+### 4. Firebase Worker / Analytics Service
 ```bash
 cd analytics
 pip install -r requirements.txt
-uvicorn main:app --reload --port 8001
+uvicorn main:app --reload --port 8000
 ```
 
 ---
@@ -143,9 +187,17 @@ See the **Firebase Console Checklist** section in the project documentation or r
   "deviceId": "hub-rpi4-001",
   "temperatureC": 22.4,
   "humidityPercent": 55.2,
+  "comfort_score": 92,
   "timestamp": "<timestamp>"
 }
 ```
+
+### Worker-owned collections
+- `usageLogs`: immutable restocked/cooked/discarded events used for sustainability, waste, and buy-signal analytics.
+- `recipeRequests`: client-created `{ status: "pending" }` documents that the worker turns into saved `recipes`.
+- `smartPlanRequests`: client-created pending documents that the worker turns into `smartShoppingPlans`.
+- `analyticsSummaries`: worker-written dashboard docs such as `sustainability`, `wasteReport`, `popularCategories`, `missions`, `liveStatus`, and `risk`.
+- `productLookups`: cached barcode metadata from Open Food Facts.
 
 ---
 

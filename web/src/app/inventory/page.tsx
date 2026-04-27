@@ -1,12 +1,43 @@
 // web/src/app/inventory/page.tsx
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
-import { subscribePantry, PantryItem, subscribeRecipes, RecipeItem } from "@/lib/firestore";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import {
+  addBarcodeToPantry,
+  addPantryItem,
+  cookRecipeFromFirestore,
+  FirestoreTimestamp,
+  PantryItem,
+  performPantryAction,
+  RecipeItem,
+  requestRecipeDiscovery,
+  subscribeAnalyticsSummary,
+  subscribePantry,
+  subscribeRecipes,
+} from "@/lib/firestore";
 import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const ANALYTICS_BASE_URL = process.env.NEXT_PUBLIC_ANALYTICS_URL || API_BASE_URL.replace(":8000", ":8001");
+type RecipeFilter = "time" | "match" | "none";
+type WasteReportRow = {
+  item_id: string;
+  cooked: number;
+  discarded: number;
+  waste_rate: number;
+  suggestion: string;
+};
+type HistoricalScorePoint = { date: string; score: number };
+type PopularCategory = { category: string; count: number };
+type RecipeUnlock = { ingredient: string; unlocks: number };
+type LiveStatus = {
+  temperature?: number;
+  humidity?: number;
+  comfort_score?: number;
+};
+type LiveTrend = { trend?: string };
+type RiskState = {
+  high_risk_active?: boolean;
+  min_humidity_5m?: number;
+};
 
 export default function InventoryPage() {
   const [activeTab, setActiveTab] = useState<"pantry" | "recipes" | "sustainability" | "analytics">("pantry");
@@ -18,16 +49,16 @@ export default function InventoryPage() {
   const [sustainabilityScore, setSustainabilityScore] = useState<number | null>(null);
 
   // New Analytics & Sustainability States
-  const [wasteReport, setWasteReport] = useState<any[]>([]);
-  const [historicalScore, setHistoricalScore] = useState<any[]>([]);
-  const [popCategories, setPopCategories] = useState<any[]>([]);
+  const [wasteReport, setWasteReport] = useState<WasteReportRow[]>([]);
+  const [historicalScore, setHistoricalScore] = useState<HistoricalScorePoint[]>([]);
+  const [popCategories, setPopCategories] = useState<PopularCategory[]>([]);
   const [missions, setMissions] = useState<string[]>([]);
-  const [unlocks, setUnlocks] = useState<any[]>([]);
+  const [unlocks, setUnlocks] = useState<RecipeUnlock[]>([]);
 
   // Live Status State
-  const [liveStatus, setLiveStatus] = useState<any>(null);
-  const [liveTrend, setLiveTrend] = useState<any>(null);
-  const [riskState, setRiskState] = useState<any>(null);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
+  const [liveTrend, setLiveTrend] = useState<LiveTrend | null>(null);
+  const [riskState, setRiskState] = useState<RiskState | null>(null);
 
   // Manual Entry Form State
   const [manualName, setManualName] = useState("");
@@ -35,6 +66,10 @@ export default function InventoryPage() {
   const [manualExpiry, setManualExpiry] = useState("");
   const [manualAmount, setManualAmount] = useState("1");
   const [manualUnit, setManualUnit] = useState("unit");
+  const [scanUpc, setScanUpc] = useState("");
+  const [scanStatus, setScanStatus] = useState("");
+  const [scanBusy, setScanBusy] = useState(false);
+  const scanInputRef = useRef<HTMLInputElement | null>(null);
 
   const INGREDIENTS_DB: Record<string, { category: string; unit: string }> = {
     "Milk": { category: "liquid", unit: "fl oz" },
@@ -75,7 +110,7 @@ export default function InventoryPage() {
   const [expandedRecipe, setExpandedRecipe] = useState<string | null>(null);
   
   // Recipe Filters
-  const [recipeFilter, setRecipeFilter] = useState<"time" | "match" | "none">("none");
+  const [recipeFilter, setRecipeFilter] = useState<RecipeFilter>("none");
 
   useEffect(() => {
     const unsubPantry = subscribePantry((data) => {
@@ -88,58 +123,49 @@ export default function InventoryPage() {
       setRecipesList(data);
       setLoadingRecipes(false);
     });
-
-    fetch(`${ANALYTICS_BASE_URL}/analytics/sustainability`)
-      .then(res => res.json())
-      .then(data => setSustainabilityScore(data.sustainability_score))
-      .catch(console.error);
-
-    // Initial load fetches for analytics
-    fetch(`${ANALYTICS_BASE_URL}/analytics/waste-report`).then(r=>r.json()).then(d=>setWasteReport(d.waste_report)).catch(()=>{});
-    fetch(`${ANALYTICS_BASE_URL}/analytics/historical-sustainability`).then(r=>r.json()).then(d=>setHistoricalScore(d.trend)).catch(()=>{});
-    fetch(`${ANALYTICS_BASE_URL}/analytics/popular-categories`).then(r=>r.json()).then(d=>setPopCategories(d.categories)).catch(()=>{});
-    fetch(`${ANALYTICS_BASE_URL}/analytics/missions`).then(r=>r.json()).then(d=>setMissions(d.missions)).catch(()=>{});
-    fetch(`${API_BASE_URL}/recipes/unlocker`).then(r=>r.json()).then(d=>setUnlocks(d.high_impact_purchases)).catch(()=>{});
-
-    const pollStatus = () => {
-      fetch(`${ANALYTICS_BASE_URL}/analytics/status`).then(res => res.json()).then(setLiveStatus).catch(() => {});
-      fetch(`${ANALYTICS_BASE_URL}/analytics/trending`).then(res => res.json()).then(setLiveTrend).catch(() => {});
-      fetch(`${ANALYTICS_BASE_URL}/analytics/risk`).then(res => res.json()).then(setRiskState).catch(() => {});
-    };
-    pollStatus();
-    const interval = setInterval(pollStatus, 30000);
+    const unsubSustainability = subscribeAnalyticsSummary<{ sustainability_score?: number }>("sustainability", (data) => {
+      setSustainabilityScore(data?.sustainability_score ?? 100);
+    });
+    const unsubWaste = subscribeAnalyticsSummary<{ waste_report?: WasteReportRow[] }>("wasteReport", (data) => {
+      setWasteReport(data?.waste_report ?? []);
+    });
+    const unsubHistorical = subscribeAnalyticsSummary<{ trend?: HistoricalScorePoint[] }>("historicalSustainability", (data) => {
+      setHistoricalScore(data?.trend ?? []);
+    });
+    const unsubCategories = subscribeAnalyticsSummary<{ categories?: PopularCategory[] }>("popularCategories", (data) => {
+      setPopCategories(data?.categories ?? []);
+    });
+    const unsubMissions = subscribeAnalyticsSummary<{ missions?: string[] }>("missions", (data) => {
+      setMissions(data?.missions ?? []);
+    });
+    const unsubUnlocks = subscribeAnalyticsSummary<{ high_impact_purchases?: RecipeUnlock[] }>("recipeUnlocks", (data) => {
+      setUnlocks(data?.high_impact_purchases ?? []);
+    });
+    const unsubLiveStatus = subscribeAnalyticsSummary<LiveStatus>("liveStatus", setLiveStatus);
+    const unsubLiveTrend = subscribeAnalyticsSummary<LiveTrend>("liveTrend", setLiveTrend);
+    const unsubRisk = subscribeAnalyticsSummary<RiskState>("risk", setRiskState);
 
     return () => {
       unsubPantry();
       unsubRecipes();
-      clearInterval(interval);
+      unsubSustainability();
+      unsubWaste();
+      unsubHistorical();
+      unsubCategories();
+      unsubMissions();
+      unsubUnlocks();
+      unsubLiveStatus();
+      unsubLiveTrend();
+      unsubRisk();
     };
   }, []);
 
   const handleAction = async (itemId: string, actionType: "cooked" | "discarded") => {
     try {
-      const payload = { item_id: itemId, action_type: actionType };
-      const url = `${API_BASE_URL}/inventory/action`;
-      console.log('API CALL START:', url, payload);
-
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        window.alert(`Error ${res.status}: ${errText}`);
-        return;
-      }
-
-      // Refresh score
-      const res2 = await fetch(`${ANALYTICS_BASE_URL}/analytics/sustainability`);
-      const data = await res2.json();
-      setSustainabilityScore(data.sustainability_score);
+      await performPantryAction(itemId, actionType);
     } catch (e) {
       console.error("Action failed", e);
+      window.alert("Could not update this pantry item. Please try again.");
     }
   };
 
@@ -148,29 +174,13 @@ export default function InventoryPage() {
     e.preventDefault();
     if (!manualName) return;
     try {
-      const payload = {
-          name: manualName,
-          category: manualCat || "misc",
-          quantity: parseFloat(manualAmount) || 1,
-          unit: manualUnit || "unit",
-          in_stock: true,
-          expiryDate: manualExpiry || null
-      };
-      const url = `${API_BASE_URL}/inventory/add`;
-      console.log('API CALL START:', url, payload);
-
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+      await addPantryItem({
+        name: manualName,
+        category: manualCat || "misc",
+        quantity: parseFloat(manualAmount) || 1,
+        unit: manualUnit || "unit",
+        expiryDate: manualExpiry || null,
       });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        window.alert(`Error ${res.status}: ${errText}`);
-        return;
-      }
-
       setManualName("");
       setManualCat("");
       setManualExpiry("");
@@ -178,28 +188,38 @@ export default function InventoryPage() {
       setManualUnit("unit");
     } catch (e) {
       console.error("Add failed", e);
+      window.alert("Could not add this pantry item. Please try again.");
+    }
+  };
+
+  const handleBarcodeScan = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const upc = scanUpc.trim();
+    if (!upc || scanBusy) return;
+
+    setScanBusy(true);
+    setScanStatus(`Looking up UPC ${upc}...`);
+    try {
+      const result = await addBarcodeToPantry(upc);
+      const verb = result.action === "restocked" ? "Restocked" : "Added";
+      setScanStatus(`${verb}: ${result.name} (+${result.quantity_added} ${result.unit})`);
+      setScanUpc("");
+    } catch (error) {
+      console.error("Barcode scan failed", error);
+      setScanStatus(error instanceof Error ? error.message : "Could not add that UPC.");
+    } finally {
+      setScanBusy(false);
+      requestAnimationFrame(() => scanInputRef.current?.focus());
     }
   };
 
   const handleCookRecipe = async (recipeId: string) => {
     try {
-      const url = `${API_BASE_URL}/recipes/${recipeId}/cook`;
-      console.log('API CALL START:', url, {});
-
-      const res = await fetch(url, {
-        method: "POST",
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        window.alert(`Error ${res.status}: ${errText}`);
-        return;
-      }
-
-      // Optionally show a toast!
+      await cookRecipeFromFirestore(recipeId);
       alert("Recipe ingredients deducted from pantry!");
     } catch (e) {
       console.error("Cook recipe failed", e);
+      window.alert("Could not cook this recipe. Please try again.");
     }
   };
 
@@ -235,10 +255,10 @@ export default function InventoryPage() {
   const discoverNewRecipes = async () => {
     setDiscovering(true);
     try {
-      // Backend generation. It saves to Firebase, which auto-triggers unsubRecipes!
-      await fetch(`${API_URL}/recipes/discover`, { method: "POST" });
+      await requestRecipeDiscovery();
     } catch (e) {
       console.error("Discovery failed", e);
+      window.alert("Could not queue recipe discovery. Please try again.");
     } finally {
       setDiscovering(false);
     }
@@ -252,7 +272,7 @@ export default function InventoryPage() {
     return lower.includes("spinach") || lower.includes("bread") || lower.includes("lettuce") || lower.includes("tomato") || lower.includes("avocado") || lower.includes("fruit") || lower.includes("avocado toast");
   };
   
-  const getRecipeVisualState = (recipeIngs: string[]) => {
+  const getRecipeVisualState = useCallback((recipeIngs: string[]) => {
     let matchedCount = 0;
     let highRiskMatchCount = 0;
     const missing: string[] = [];
@@ -275,7 +295,7 @@ export default function InventoryPage() {
     const isUnavailable = missingCount > 2;
 
     return { matchedCount, missing, missingCount, is100Percent, isAlmost, isUnavailable, highRiskMatchCount };
-  };
+  }, [pantryStrs, riskState]);
 
   // Filter & Sorting logic
   const parseTime = (timeStr?: string) => {
@@ -309,9 +329,9 @@ export default function InventoryPage() {
       list.sort((a, b) => getRecipeVisualState(b.ingredients).matchedCount - getRecipeVisualState(a.ingredients).matchedCount);
     }
     return list;
-  }, [recipesList, recipeFilter, pantryStrs, riskState]);
+  }, [recipesList, recipeFilter, riskState, getRecipeVisualState]);
 
-  const isNewBadge = (timestamp?: any) => {
+  const isNewBadge = (timestamp?: FirestoreTimestamp) => {
     if (!timestamp || !timestamp.seconds) return false;
     const diffHours = (Date.now() / 1000 - timestamp.seconds) / 3600;
     return diffHours < 24;
@@ -412,6 +432,36 @@ export default function InventoryPage() {
 
         {activeTab === "pantry" && (
           <div className="space-y-8 animate-in fade-in flex flex-col">
+            {/* Barcode Scan */}
+            <form onSubmit={handleBarcodeScan} className="bg-sky-950/20 border border-sky-900/50 rounded-xl p-5 flex flex-col md:flex-row gap-4 items-end shadow-md">
+              <div className="flex-1 w-full">
+                <label className="block text-xs font-medium text-sky-300 mb-1">Barcode Scanner</label>
+                <input
+                  ref={scanInputRef}
+                  autoFocus
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  type="text"
+                  placeholder="Scan UPC..."
+                  value={scanUpc}
+                  onChange={(e) => setScanUpc(e.target.value.replace(/\D/g, ""))}
+                  className="w-full bg-gray-900 border border-sky-800 rounded p-3 text-sm focus:ring-2 focus:ring-sky-500 outline-none"
+                />
+                {scanStatus && (
+                  <p className={`mt-2 text-xs ${scanStatus.includes("Added") || scanStatus.includes("Restocked") ? "text-emerald-400" : "text-sky-300"}`}>
+                    {scanStatus}
+                  </p>
+                )}
+              </div>
+              <button
+                type="submit"
+                disabled={scanBusy || !scanUpc.trim()}
+                className="w-full md:w-auto bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium px-6 py-3 rounded transition-colors text-sm shadow"
+              >
+                {scanBusy ? "Adding..." : "Scan Add"}
+              </button>
+            </form>
+
             {/* Manual Entry Form */}
             <form onSubmit={handleManualAdd} className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col md:flex-row gap-4 items-end shadow-md flex-wrap">
               <div className="flex-1 min-w-[200px]">
@@ -516,7 +566,7 @@ export default function InventoryPage() {
               <div className="flex flex-col sm:flex-row gap-3">
                 <select 
                   value={recipeFilter} 
-                  onChange={(e) => setRecipeFilter(e.target.value as any)}
+                  onChange={(e) => setRecipeFilter(e.target.value as RecipeFilter)}
                   className="bg-gray-800 border border-gray-700 rounded-lg p-2.5 text-sm text-gray-200 outline-none hover:bg-gray-700 transition-colors font-medium cursor-pointer shadow-sm"
                 >
                   <option value="none">Default Scan</option>
@@ -775,4 +825,3 @@ export default function InventoryPage() {
     </main>
   );
 }
-

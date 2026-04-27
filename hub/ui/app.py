@@ -4,7 +4,7 @@ Root Kivy application for the Smart Pantry Hub.
 Wires together:
   • ScreenManager + screens
   • KeyboardWedge barcode scanner (Window.bind)
-  • Async FastAPI SKU lookup with SQLite offline fallback
+  • Async SKU lookup with SQLite offline fallback
   • Background sync monitor (re-syncs offline scans on reconnect)
   • RAM-Guard check before Ollama meal recommendations
   • Sense HAT environment logger
@@ -20,7 +20,7 @@ from kivy.clock import Clock
 from hub.ui.screens import PantryScreen, AddItemScreen
 from hub.scanner.keyboard_wedge import KeyboardWedge
 from hub.services.sku_client import (
-    lookup_sku_async,
+    auto_add_sku_async,
     start_sync_monitor,
     stop_sync_monitor,
     pending_scan_count,
@@ -51,7 +51,7 @@ class SmartPantryApp(App):
 
         # ── Offline sync monitor ───────────────────────────────────────
         # Polls every 30 s; when Wi-Fi restores, flushes cached scans
-        # to FastAPI and notifies the UI via _on_sync_complete().
+        # to Open Food Facts/Firestore and notifies the UI via _on_sync_complete().
         start_sync_monitor(on_sync=self._on_sync_complete)
 
         # ── Environment logger (background thread) ─────────────────────
@@ -87,44 +87,46 @@ class SmartPantryApp(App):
         barcode is received.
 
         Steps:
-          1. Navigate to add_item screen (immediate feedback).
-          2. Fire async lookup → on success: auto-fill form fields.
+          1. Show immediate scanning feedback.
+          2. Fire async lookup → on success: add/restock item in Firestore.
              On network failure: save to SQLite cache, show offline notice.
         """
         logger.info("[App] Barcode received: %s", sku)
 
-        def _switch_screen(*_):
-            self.sm.current = "add_item"
-            self.add_item_screen.prefill_barcode(sku)
-            self.add_item_screen.set_status("🔍 Looking up product…", color="info")
+        def _show_scanning(*_):
+            self.sm.current = "pantry"
+            self.pantry_screen.set_banner(f"🔍 Scanning UPC {sku}…", level="info")
 
-        Clock.schedule_once(_switch_screen)
+        Clock.schedule_once(_show_scanning)
 
-        lookup_sku_async(
+        auto_add_sku_async(
             sku=sku,
-            on_success=self._on_sku_found,
+            on_success=self._on_sku_auto_added,
             on_error=self._on_sku_error,
             on_offline=self._on_sku_offline,
         )
 
-    def _on_sku_found(self, data: dict):
-        """Auto-fill the Add Item form with API-returned product data."""
-        self.add_item_screen.prefill_from_api(data)
-        self.add_item_screen.set_status(
-            f"✅ Found: {data.get('product_name', 'Unknown')}", color="success"
+    def _on_sku_auto_added(self, result: dict):
+        """Refresh the pantry after a scanned item has been auto-added."""
+        action = "Restocked" if result.get("action") == "restocked" else "Added"
+        self.pantry_screen.refresh()
+        self.pantry_screen.set_banner(
+            f"✅ {action}: {result.get('name', 'Unknown')} (+{result.get('quantity_added')} {result.get('unit', 'unit')})",
+            level="success",
         )
 
     def _on_sku_error(self, error: str):
         """API reachable but product not found (404) or server error."""
         logger.warning("[App] SKU lookup error: %s", error)
-        self.add_item_screen.set_status(
-            "⚠️ Product not found — fill in manually.", color="warning"
+        self.pantry_screen.set_banner(
+            "⚠️ Product not found for that UPC. Add it manually once, then scan again later.",
+            level="warning",
         )
 
     def _on_sku_offline(self, message: str):
         """Network unavailable; scan was saved to SQLite cache."""
         logger.info("[App] Offline scan queued: %s", message)
-        self.add_item_screen.set_status(message, color="warning")
+        self.pantry_screen.set_banner(message, level="warning")
 
     # ------------------------------------------------------------------
     # Sync monitor callback
@@ -133,8 +135,10 @@ class SmartPantryApp(App):
     def _on_sync_complete(self, n_synced: int):
         """Called by sync monitor when offline scans have been flushed."""
         logger.info("[App] ✅ %d offline scan(s) synced.", n_synced)
-        self.add_item_screen.set_status(
-            f"📡 Back online — {n_synced} queued scan(s) synced!", color="success"
+        self.pantry_screen.refresh()
+        self.pantry_screen.set_banner(
+            f"📡 Back online — {n_synced} queued scan(s) auto-added!",
+            level="success",
         )
 
     # ------------------------------------------------------------------

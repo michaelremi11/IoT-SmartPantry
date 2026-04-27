@@ -1,24 +1,23 @@
-import sys
-sys.path.insert(0, '.')
-from api.db.influx_db import get_influx_client
+#!/usr/bin/env python3
+"""
+Quick Firestore analytics sanity check.
+
+Run from the project root after configuring GOOGLE_APPLICATION_CREDENTIALS.
+"""
+
 import os
+import sys
 
-client = get_influx_client()
-health = client.health()
-print(f'Health: {health.status}')
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-q = client.query_api()
-bucket = os.getenv('INFLUX_BUCKET', 'pantry_sensors')
-tables = q.query(f'from(bucket: "{bucket}") |> range(start: -24h) |> limit(n: 5)')
-total = sum(len(t.records) for t in tables)
-print(f'Query succeeded: {total} records returned')
+from analytics.firebase import get_db
 
-# Print a sample record
-for t in tables:
-    for r in t.records:
-        print(f'  Sample: time={r.get_time()}, field={r.get_field()}, value={r.get_value()}')
-        break
-    break
+db = get_db()
+pantry_count = len(list(db.collection(os.getenv("FIRESTORE_PANTRY_COLLECTION", "pantryItems")).limit(5).stream()))
+usage_count = len(list(db.collection(os.getenv("FIRESTORE_USAGE_LOGS_COLLECTION", "usageLogs")).limit(5).stream()))
+env_count = len(list(db.collection(os.getenv("FIRESTORE_LOGS_COLLECTION", "environmentLogs")).limit(5).stream()))
 
-client.close()
-print('ALL GOOD - InfluxDB 401 is FIXED')
+print("Firestore connection OK")
+print(f"Sample pantry docs: {pantry_count}")
+print(f"Sample usage log docs: {usage_count}")
+print(f"Sample environment log docs: {env_count}")

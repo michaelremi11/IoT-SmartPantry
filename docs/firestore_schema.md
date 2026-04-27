@@ -10,52 +10,52 @@
 
 ```
 Firestore Root
-├── inventory/           ← Current stock of every item (keyed by SKU)
-├── pantryItems/         ← Richer item records used by the analytics service
-├── usage_logs/          ← Immutable event log powering Buy More / Buy Less
+├── pantryItems/         ← Current stock, edited directly by web/mobile/Pi
+├── shoppingList/        ← Shared shopping list, edited directly by clients
+├── recipes/             ← Saved recipes, usually written by the worker
+├── usageLogs/           ← Immutable event log powering analytics
 ├── analyticsEvents/     ← Time-series quantity snapshots for consumption rate
-└── environmentLogs/     ← Sense HAT temperature & humidity readings
+├── environmentLogs/     ← Sense HAT temperature & humidity readings
+├── productLookups/      ← Cached barcode metadata from Open Food Facts
+├── recipeRequests/      ← Client-created requests for worker recipe generation
+├── smartPlanRequests/   ← Client-created requests for worker shopping plans
+├── analyticsSummaries/  ← Worker-written dashboard summaries
+└── smartShoppingPlans/  ← Worker-written smart shopping plan results
 ```
 
 ---
 
-## `inventory` Collection
+## `productLookups` Collection
 
 **Document ID:** `{sku}` (EAN-13 / UPC barcode string)
 
-Populated automatically by `GET /lookup/{sku}` on the FastAPI service.
-User may edit `expiry_date`, `amount`, and `in_stock` fields from the Kivy UI.
+Populated by barcode lookup code on the Pi/web or by the compatibility `/lookup/{sku}` endpoint.
+This is metadata only; pantry stock lives in `pantryItems`. Clients may skip this cache write if security rules reserve it for service-account writers.
 
 | Field          | Type      | Required | Description                                                        |
 |----------------|-----------|----------|--------------------------------------------------------------------|
 | `sku`          | `string`  | ✅        | Barcode / SKU (mirrors the document ID)                            |
-| `name`         | `string`  | ✅        | Product name from Open Food Facts                                  |
-| `amount`       | `number`  | ✅        | Current quantity in stock                                          |
+| `product_name` | `string`  | ✅        | Product name from Open Food Facts                                  |
+| `quantity`     | `number \| null` | ❌ | Parsed package quantity, if Open Food Facts provides one      |
 | `unit`         | `string`  | ✅        | Unit of measure (`ml`, `g`, `carton`, `unit`, …)                  |
-| `added_date`   | `timestamp` | ✅      | UTC timestamp when the item was first scanned                      |
-| `expiry_date`  | `timestamp \| null` | ✅ | Expiry date (user-entered on Kivy form; `null` until filled)   |
-| `in_stock`     | `boolean` | ✅        | `true` = available; `false` = consumed/removed                     |
 | `category`     | `string`  | ❌        | Derived from Open Food Facts category tags (e.g. `oat drinks`)    |
 | `brand`        | `string`  | ❌        | Brand name from Open Food Facts                                    |
 | `image_url`    | `string`  | ❌        | Product image URL from Open Food Facts                             |
-| `source`       | `string`  | ❌        | `"open_food_facts"` or `"manual"`                                  |
-| `baseline_rate_per_day` | `number \| null` | ❌ | Expected consumption rate (used by Buy More logic)      |
+| `raw_quantity` | `string`  | ❌        | Original package quantity string                                   |
+| `updatedAt`    | `timestamp` | ✅      | Last lookup/cache time                                             |
 
-**Example document (`inventory/5449000000996`):**
+**Example document (`productLookups/5449000000996`):**
 ```json
 {
   "sku":          "5449000000996",
-  "name":         "Coca-Cola Classic",
-  "amount":       6,
+  "product_name": "Coca-Cola Classic",
+  "quantity":     6,
   "unit":         "can",
-  "added_date":   "2026-04-13T18:00:00Z",
-  "expiry_date":  "2026-08-01T00:00:00Z",
-  "in_stock":     true,
   "category":     "sodas",
   "brand":        "Coca-Cola",
   "image_url":    "https://images.openfoodfacts.org/...",
-  "source":       "open_food_facts",
-  "baseline_rate_per_day": 0.5
+  "raw_quantity": "6 cans",
+  "updatedAt":    "2026-04-13T18:00:00Z"
 }
 ```
 
@@ -71,18 +71,47 @@ This is the primary record the user manages from the UI.
 | Field        | Type        | Required | Description                                          |
 |--------------|-------------|----------|------------------------------------------------------|
 | `name`       | `string`    | ✅        | User-entered or API-populated product name           |
-| `barcode`    | `string`    | ❌        | SKU / barcode (links to `inventory/{sku}`)           |
+| `barcode`    | `string`    | ❌        | SKU / barcode (may link to `productLookups/{sku}`)   |
 | `quantity`   | `number`    | ✅        | Current quantity                                     |
+| `amount`     | `number`    | ❌        | Backward-compatible mirror of `quantity`             |
 | `unit`       | `string`    | ✅        | Unit of measure                                      |
 | `expiryDate` | `string`    | ❌        | ISO date string `YYYY-MM-DD` (from Kivy form input)  |
 | `category`   | `string`    | ❌        | Food category                                        |
+| `brand`      | `string`    | ❌        | Brand from UPC lookup                                |
+| `image_url`  | `string`    | ❌        | Product image from UPC lookup                        |
+| `in_stock`   | `boolean`   | ❌        | `true` when quantity is above zero                   |
+| `source`     | `string`    | ❌        | e.g. `"web-barcode-scan"` or `"kivy-barcode-scan"`  |
 | `addedAt`    | `timestamp` | ✅        | Creation timestamp                                   |
 | `updatedAt`  | `timestamp` | ✅        | Last modification timestamp                          |
 | `baseline_rate_per_day` | `number \| null` | ❌ | Expected daily consumption rate         |
 
 ---
 
-## `usage_logs` Collection
+## `shoppingList` Collection
+
+**Document ID:** Auto-generated by Firestore
+
+Shared list for web/mobile clients. Items can be added manually, from smart-plan suggestions, or by scanning a UPC on the shopping page. Add flows dedupe against unchecked shopping items by barcode first and normalized name second, then increment quantity instead of creating duplicates.
+
+| Field        | Type        | Required | Description                                          |
+|--------------|-------------|----------|------------------------------------------------------|
+| `name`       | `string`    | ✅        | Shopping item name                                   |
+| `quantity`   | `number`    | ✅        | Quantity to buy                                      |
+| `unit`       | `string`    | ❌        | Unit of measure                                      |
+| `barcode`    | `string`    | ❌        | UPC/SKU from barcode scan                            |
+| `category`   | `string`    | ❌        | Food category                                        |
+| `brand`      | `string`    | ❌        | Brand from UPC lookup                                |
+| `image_url`  | `string`    | ❌        | Product image from UPC lookup                        |
+| `addedBy`    | `string`    | ❌        | `"web-dashboard"` \| `"barcode-scan"` \| `"analytics-auto"` |
+| `checked`    | `boolean`   | ✅        | `true` when bought/handled                           |
+| `addedAt`    | `timestamp` | ✅        | Creation timestamp                                   |
+| `updatedAt`  | `timestamp` | ❌        | Last modification timestamp                          |
+
+When an item is checked off in the web dashboard, the app marks it checked and restocks `pantryItems`. If the shopping item has a barcode matching an existing pantry item, that pantry quantity is incremented; otherwise a new pantry item is created.
+
+---
+
+## `usageLogs` Collection
 
 **Document ID:** Auto-generated
 
@@ -91,10 +120,13 @@ This is the source of truth for the **Buy More / Buy Less analytics**.
 
 | Field            | Type        | Required | Description                                                   |
 |------------------|-------------|----------|---------------------------------------------------------------|
-| `sku`            | `string`    | ✅        | Product SKU (links to `inventory/{sku}`)                      |
+| `sku`            | `string`    | ✅        | Product SKU (may link to `productLookups/{sku}`)              |
 | `item_id`        | `string`    | ✅        | Firestore `pantryItems` document ID                           |
+| `item_name`      | `string`    | ❌        | Item name at the time of the event                            |
 | `event_type`     | `string`    | ✅        | `"consumed"` \| `"restocked"` \| `"expired"`                  |
+| `action_type`    | `string`    | ❌        | UI action: `"cooked"` \| `"discarded"` \| `"restocked"`       |
 | `delta`          | `number`    | ✅        | Quantity change magnitude (always **positive**)               |
+| `quantity_changed` | `number`  | ❌        | Count-style value used by sustainability scores               |
 | `quantity_after` | `number`    | ✅        | Stock level *after* this event (for time-series reconstruction) |
 | `timestamp`      | `timestamp` | ✅        | UTC time of the event                                         |
 | `notes`          | `string`    | ❌        | Optional human note (e.g. `"used in pasta dish"`)             |
@@ -112,8 +144,11 @@ This is the source of truth for the **Buy More / Buy Less analytics**.
 {
   "sku":            "5449000000996",
   "item_id":        "abc123firestore",
+  "item_name":      "Coca-Cola Classic",
   "event_type":     "consumed",
+  "action_type":    "cooked",
   "delta":          2,
+  "quantity_changed": 1,
   "quantity_after": 4,
   "timestamp":      "2026-04-10T12:30:00Z",
   "notes":          "made cocktail"
@@ -164,7 +199,71 @@ Written every N minutes by the Sense HAT logger (`hub/sensors/sense_hat_logger.p
 | `deviceId`         | `string`    | ✅        | e.g. `"pi4-kitchen-hub"`             |
 | `temperatureC`     | `number`    | ✅        | Ambient temperature in Celsius       |
 | `humidityPercent`  | `number`    | ✅        | Relative humidity %                  |
+| `comfort_score`    | `number`    | ❌        | 0-100 derived comfort score          |
 | `timestamp`        | `timestamp` | ✅        | UTC reading time                     |
+
+---
+
+## Request / Worker Collections
+
+### `recipeRequests/{requestId}`
+
+Clients create these documents instead of calling an HTTP endpoint. The Firebase worker processes pending requests, writes generated recipes to `recipes`, and updates the request status.
+
+```json
+{
+  "type": "discover",
+  "status": "pending",
+  "createdBy": "web-dashboard",
+  "createdAt": "<timestamp>"
+}
+```
+
+Worker status values: `"pending"`, `"processing"`, `"complete"`, `"error"`.
+
+### `smartPlanRequests/{requestId}`
+
+Clients create these to ask the worker to refresh the smart shopping plan.
+
+```json
+{
+  "status": "pending",
+  "createdBy": "web-dashboard",
+  "createdAt": "<timestamp>"
+}
+```
+
+### `analyticsSummaries/{summaryId}`
+
+Worker-written dashboard data. Clients should read these, not write them.
+
+Current summary IDs:
+
+| Document ID | Shape |
+|-------------|-------|
+| `sustainability` | `{ cooked_count, discarded_count, total_actions, sustainability_score }` |
+| `wasteReport` | `{ waste_report: [...] }` |
+| `historicalSustainability` | `{ trend: [{ date, score }] }` |
+| `popularCategories` | `{ categories: [{ category, count }] }` |
+| `missions` | `{ missions: string[] }` |
+| `liveStatus` | latest temperature, humidity, comfort score |
+| `liveTrend` | short recent trend summary |
+| `risk` | environment risk/anomaly state |
+| `recipeUnlocks` | `{ high_impact_purchases: [...] }` |
+| `buySignals` | `{ signals: [...] }` |
+
+### `smartShoppingPlans/{planId}`
+
+The worker writes request-specific plans and also keeps `smartShoppingPlans/current` updated for clients that just want the latest result.
+
+```json
+{
+  "staples": [{ "item": "Milk", "reason": "Out of stock" }],
+  "unlocks": [{ "item": "Garlic", "reason": "Unlocks 2 recipes" }],
+  "waste_prevention": [{ "item": "Spinach", "reason": "Expires in 1 days" }],
+  "updatedAt": "<timestamp>"
+}
+```
 
 ---
 
@@ -174,10 +273,12 @@ Create these composite indexes in the Firebase Console to avoid slow query error
 
 | Collection       | Fields                              | Order       |
 |------------------|-------------------------------------|-------------|
-| `usage_logs`     | `item_id` ASC, `timestamp` ASC      | Ascending   |
-| `usage_logs`     | `timestamp` ASC                     | Ascending   |
+| `usageLogs`      | `item_id` ASC, `timestamp` ASC      | Ascending   |
+| `usageLogs`      | `timestamp` ASC                     | Ascending   |
 | `analyticsEvents`| `itemId` ASC, `timestamp` ASC       | Ascending   |
 | `environmentLogs`| `timestamp` DESC                    | Descending  |
+| `recipeRequests` | `status` ASC                        | Ascending   |
+| `smartPlanRequests` | `status` ASC                     | Ascending   |
 
 ---
 
@@ -191,16 +292,39 @@ service cloud.firestore {
     // Hub (Pi) and analytics service use service account — allow server-side
     // The web dashboard reads these collections — restrict to auth'd users only.
 
-    match /inventory/{sku} {
+    match /productLookups/{sku} {
       allow read: if request.auth != null;
       allow write: if false;  // writes only via service account (server-side)
     }
     match /pantryItems/{id} {
       allow read, write: if request.auth != null;
     }
-    match /usage_logs/{id} {
+    match /shoppingList/{id} {
+      allow read, write: if request.auth != null;
+    }
+    match /usageLogs/{id} {
+      allow read, create: if request.auth != null;
+      allow update, delete: if false;  // append-only from clients
+    }
+    match /recipeRequests/{id} {
+      allow read, create: if request.auth != null;
+      allow update, delete: if false;
+    }
+    match /smartPlanRequests/{id} {
+      allow read, create: if request.auth != null;
+      allow update, delete: if false;
+    }
+    match /recipes/{id} {
       allow read: if request.auth != null;
-      allow write: if false;  // append-only via service account
+      allow write: if false;  // generated/saved by worker for now
+    }
+    match /analyticsSummaries/{id} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+    match /smartShoppingPlans/{id} {
+      allow read: if request.auth != null;
+      allow write: if false;
     }
     match /analyticsEvents/{id} {
       allow read: if request.auth != null;
@@ -208,7 +332,7 @@ service cloud.firestore {
     }
     match /environmentLogs/{id} {
       allow read: if request.auth != null;
-      allow write: if false;
+      allow write: if false;  // Pi uses Admin SDK
     }
   }
 }

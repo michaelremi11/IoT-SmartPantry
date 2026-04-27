@@ -2,6 +2,5 @@ fastapi
 uvicorn
 pydantic
 firebase-admin
-influxdb-client
 httpx
 python-dotenv
