@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@source inline("bg-lime-300 bg-lime-400 bg-lime-900 hover:bg-lime-400 bg-emerald-300 hover:bg-emerald-400");
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
