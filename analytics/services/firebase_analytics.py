@@ -61,6 +61,15 @@ def _number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _usage_value(log: dict, default: float = 1.0) -> float:
+    """Prefer true quantity deltas over legacy count-style `quantity_changed` values."""
+    delta = _number(log.get("delta"), default)
+    quantity_changed = _number(log.get("quantity_changed"), default)
+    if delta > 0:
+        return delta
+    return quantity_changed
+
+
 def _expiry_days(expiry: Any) -> Optional[int]:
     if not expiry:
         return None
@@ -109,6 +118,24 @@ def get_usage_logs(db, days: int = 30) -> list[dict]:
     return logs
 
 
+def get_item_quantity_history(db, item_id: str, days: int = 30) -> list[dict]:
+    history = []
+    for log in get_usage_logs(db, days=days):
+        current_item_id = log.get("item_id") or log.get("itemId")
+        if current_item_id != item_id:
+            continue
+        quantity_after = log.get("quantity_after")
+        if quantity_after is None:
+            continue
+        history.append(
+            {
+                "quantity": _number(quantity_after),
+                "timestamp": log["timestamp"],
+            }
+        )
+    return history
+
+
 def get_environment_logs(db, hours: int = 24, device_id: Optional[str] = None) -> list[dict]:
     since = utc_now() - timedelta(hours=hours)
     logs = []
@@ -153,7 +180,7 @@ def get_sustainability_score(db) -> dict:
     for log in get_usage_logs(db, days=30):
         action = log.get("action_type")
         event_type = log.get("event_type")
-        value = _number(log.get("quantity_changed", 1.0), 1.0)
+        value = _usage_value(log, 1.0)
         if action == "cooked" or event_type == "consumed":
             cooked += value
         elif action == "discarded" or event_type in {"expired", "discarded"}:
@@ -233,7 +260,7 @@ def get_waste_report(db) -> dict:
         item_id = log.get("item_id") or log.get("itemId") or "unknown"
         action = log.get("action_type")
         event_type = log.get("event_type")
-        value = _number(log.get("quantity_changed", 1.0), 1.0)
+        value = _usage_value(log, 1.0)
         if action == "cooked" or event_type == "consumed":
             item_stats[item_id]["cooked"] += value
         elif action == "discarded" or event_type in {"expired", "discarded"}:
@@ -265,7 +292,7 @@ def get_historical_sustainability(db) -> dict:
         key = _date_key(log.get("timestamp"))
         action = log.get("action_type")
         event_type = log.get("event_type")
-        value = _number(log.get("quantity_changed", 1.0), 1.0)
+        value = _usage_value(log, 1.0)
         if action == "cooked" or event_type == "consumed":
             daily[key]["cooked"] += value
         elif action == "discarded" or event_type in {"expired", "discarded"}:
@@ -318,12 +345,36 @@ def get_smart_shopping_plan(db) -> dict:
     items = get_pantry_items(db)
     staples = []
     at_risk = []
+    buy_more_signals = [signal for signal in get_buy_signals(db) if signal.get("signal") == "BUY_MORE"]
+    seen_staples: set[str] = set()
+
+    for signal in buy_more_signals:
+        name = str(signal.get("name", "")).strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen_staples:
+            continue
+        staples.append({"item": name, "reason": signal.get("reason", "Running low soon")})
+        seen_staples.add(key)
+
     for item in items:
         if _number(item.get("quantity")) <= 0:
-            staples.append({"item": item["name"], "reason": "Out of stock"})
+            key = item["name"].lower()
+            if key not in seen_staples:
+                staples.append({"item": item["name"], "reason": "Out of stock"})
+                seen_staples.add(key)
         days = _expiry_days(item.get("expiryDate") or item.get("expiry_date"))
         if days is not None and 0 <= days <= 3:
             at_risk.append({"item": item["name"], "reason": f"Expires in {days} days"})
+
+    if not staples:
+        for item in sorted(items, key=lambda pantry_item: _number(pantry_item.get("quantity"), 0.0)):
+            if item["name"].lower() in seen_staples:
+                continue
+            staples.append({"item": item["name"], "reason": "Lowest stock in pantry right now"})
+            if len(staples) == 3:
+                break
 
     unlock_doc = get_recipe_unlocks(db)
     unlocks = [
@@ -332,9 +383,9 @@ def get_smart_shopping_plan(db) -> dict:
     ]
 
     return {
-        "staples": staples,
-        "unlocks": unlocks,
-        "waste_prevention": at_risk,
+        "staples": staples[:5],
+        "unlocks": unlocks[:5],
+        "waste_prevention": at_risk[:5],
     }
 
 

@@ -4,6 +4,7 @@
 import {
   collection,
   addDoc,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -65,6 +66,17 @@ export interface SmartShoppingPlan {
   updatedAt?: unknown;
 }
 
+export interface WorkerRequestStatus {
+  id: string;
+  status: "pending" | "processing" | "complete" | "error";
+  error?: string | null;
+  createdAt?: unknown;
+  startedAt?: unknown;
+  completedAt?: unknown;
+  recipeIds?: string[];
+  planId?: string;
+}
+
 export interface ProductLookup {
   sku: string;
   product_name: string;
@@ -77,6 +89,138 @@ export interface ProductLookup {
 }
 
 export type ShoppingAddSource = "web-dashboard" | "barcode-scan" | "analytics-auto";
+
+type PantryMatchable = Pick<PantryItem, "id" | "name" | "quantity" | "amount">;
+
+type IngredientIdentity = {
+  normalized: string;
+  tokens: string[];
+  family?: string;
+  group?: string;
+};
+
+const LEADING_MEASUREMENT_PATTERN =
+  /^\s*(?:\d+(?:\.\d+)?(?:\/\d+(?:\.\d+)?)?|\d+\/\d+)\s*/;
+const COMMON_INGREDIENT_FILLER = new Set([
+  "a",
+  "an",
+  "and",
+  "approx",
+  "approximately",
+  "bag",
+  "box",
+  "brand",
+  "can",
+  "cups",
+  "cup",
+  "fresh",
+  "frozen",
+  "grams",
+  "gram",
+  "large",
+  "lb",
+  "medium",
+  "ml",
+  "of",
+  "ounce",
+  "ounces",
+  "oz",
+  "package",
+  "packages",
+  "piece",
+  "pieces",
+  "pkg",
+  "pound",
+  "pounds",
+  "small",
+  "tablespoon",
+  "tablespoons",
+  "tbsp",
+  "teaspoon",
+  "teaspoons",
+  "tsp",
+  "unit",
+  "units",
+]);
+
+const FAMILY_GROUP_KEYWORDS: Array<{
+  family: string;
+  group?: string;
+  keywords: string[];
+}> = [
+  {
+    family: "pasta",
+    group: "long_pasta",
+    keywords: [
+      "spaghetti",
+      "linguine",
+      "fettuccine",
+      "angel hair",
+      "capellini",
+      "bucatini",
+      "vermicelli",
+      "pappardelle",
+      "tagliatelle",
+    ],
+  },
+  {
+    family: "pasta",
+    group: "shaped_pasta",
+    keywords: [
+      "penne",
+      "rigatoni",
+      "rotini",
+      "fusilli",
+      "macaroni",
+      "elbow macaroni",
+      "cavatappi",
+      "farfalle",
+      "ziti",
+      "gemelli",
+      "shells",
+    ],
+  },
+  {
+    family: "pasta",
+    group: "small_pasta",
+    keywords: ["orzo", "ditalini", "stelline", "acini di pepe"],
+  },
+  {
+    family: "pasta",
+    group: "sheet_pasta",
+    keywords: ["lasagna", "lasagne"],
+  },
+  {
+    family: "pasta",
+    group: "stuffed_pasta",
+    keywords: ["ravioli", "tortellini"],
+  },
+  {
+    family: "milk",
+    group: "oat_milk",
+    keywords: ["oat milk"],
+  },
+  {
+    family: "milk",
+    group: "almond_milk",
+    keywords: ["almond milk"],
+  },
+  {
+    family: "milk",
+    group: "soy_milk",
+    keywords: ["soy milk"],
+  },
+  {
+    family: "milk",
+    group: "coconut_milk",
+    keywords: ["coconut milk"],
+  },
+  {
+    family: "milk",
+    group: "cashew_milk",
+    keywords: ["cashew milk"],
+  },
+];
 
 function mapDoc<T>(snap: QuerySnapshot): T[] {
   return snap.docs.map((doc) => ({ id: doc.id, ...doc.data() } as T));
@@ -133,6 +277,20 @@ export function subscribeSmartShoppingPlan(
   });
 }
 
+export function subscribeWorkerRequestStatus(
+  collectionName: string,
+  requestId: string,
+  callback: (request: WorkerRequestStatus | null) => void
+): Unsubscribe {
+  return onSnapshot(doc(db, collectionName, requestId), (snap) => {
+    callback(
+      snap.exists()
+        ? ({ id: snap.id, ...snap.data() } as WorkerRequestStatus)
+        : null
+    );
+  });
+}
+
 export async function addPantryItem(input: {
   name: string;
   quantity: number;
@@ -176,8 +334,174 @@ export async function addPantryItem(input: {
   return docRef.id;
 }
 
-function normalizeName(name: string): string {
-  return name.trim().replace(/\s+/g, " ").toLowerCase();
+export function normalizeName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9%/]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function stripLeadingAmount(text: string): string {
+  let cleaned = text.trim();
+  while (LEADING_MEASUREMENT_PATTERN.test(cleaned)) {
+    cleaned = cleaned.replace(LEADING_MEASUREMENT_PATTERN, "");
+  }
+  return cleaned.trim();
+}
+
+function tokenizeIngredientText(text: string): string[] {
+  return normalizeName(stripLeadingAmount(text))
+    .split(" ")
+    .filter((token) => token && !COMMON_INGREDIENT_FILLER.has(token));
+}
+
+function classifyIngredientText(text: string): IngredientIdentity {
+  const normalized = normalizeName(stripLeadingAmount(text));
+  const tokens = tokenizeIngredientText(text);
+
+  for (const entry of FAMILY_GROUP_KEYWORDS) {
+    if (entry.keywords.some((keyword) => normalized.includes(normalizeName(keyword)))) {
+      return {
+        normalized,
+        tokens,
+        family: entry.family,
+        group: entry.group,
+      };
+    }
+  }
+
+  if (normalized.includes("milk")) {
+    return {
+      normalized,
+      tokens,
+      family: "milk",
+      group: "dairy_milk",
+    };
+  }
+
+  if (normalized.includes("pasta") || normalized.includes("noodle")) {
+    return {
+      normalized,
+      tokens,
+      family: "pasta",
+    };
+  }
+
+  return {
+    normalized,
+    tokens,
+  };
+}
+
+function countTokenOverlap(a: string[], b: string[]): number {
+  if (a.length === 0 || b.length === 0) {
+    return 0;
+  }
+  const right = new Set(b);
+  return a.reduce((count, token) => count + (right.has(token) ? 1 : 0), 0);
+}
+
+function getIngredientMatchStrength(
+  ingredient: IngredientIdentity,
+  pantryItem: IngredientIdentity
+): number {
+  if (!ingredient.normalized || !pantryItem.normalized) {
+    return 0;
+  }
+
+  if (
+    ingredient.normalized === pantryItem.normalized ||
+    ingredient.normalized.includes(pantryItem.normalized) ||
+    pantryItem.normalized.includes(ingredient.normalized)
+  ) {
+    return 5;
+  }
+
+  if (ingredient.family && pantryItem.family && ingredient.family === pantryItem.family) {
+    if (ingredient.group && pantryItem.group) {
+      return ingredient.group === pantryItem.group ? 4 : 0;
+    }
+    if (ingredient.group && !pantryItem.group) {
+      return 1;
+    }
+    return 3;
+  }
+
+  const overlap = countTokenOverlap(ingredient.tokens, pantryItem.tokens);
+  if (overlap >= 2) {
+    return 2;
+  }
+  if (overlap === 1) {
+    return 1;
+  }
+
+  return 0;
+}
+
+export function getItemQuantityValue(item: PantryMatchable): number {
+  return Number(item.quantity ?? item.amount ?? 0);
+}
+
+function getMatchingPantryCandidates<T extends PantryMatchable>(ingredient: string, items: T[]) {
+  const ingredientIdentity = classifyIngredientText(ingredient);
+  return items
+    .map((item) => ({
+      item,
+      quantity: getItemQuantityValue(item),
+      strength: getIngredientMatchStrength(
+        ingredientIdentity,
+        classifyIngredientText(item.name || "")
+      ),
+    }))
+    .filter((candidate) => candidate.strength > 0 && candidate.quantity > 0)
+    .sort((left, right) => {
+      if (right.strength !== left.strength) {
+        return right.strength - left.strength;
+      }
+      return left.quantity - right.quantity;
+    });
+}
+
+export function getIngredientAvailableQuantity<T extends PantryMatchable>(
+  ingredient: string,
+  items: T[]
+): number {
+  return getMatchingPantryCandidates(ingredient, items).reduce(
+    (total, candidate) => total + candidate.quantity,
+    0
+  );
+}
+
+export function allocateIngredientAcrossPantry<T extends PantryMatchable>(
+  ingredient: string,
+  amountNeeded: number,
+  items: T[]
+) {
+  const candidates = getMatchingPantryCandidates(ingredient, items);
+  const allocations: Array<{ item: T; used: number }> = [];
+  let remaining = amountNeeded;
+
+  for (const candidate of candidates) {
+    if (remaining <= 0) {
+      break;
+    }
+    const used = Math.min(candidate.quantity, remaining);
+    if (used <= 0) {
+      continue;
+    }
+    allocations.push({ item: candidate.item, used });
+    remaining -= used;
+  }
+
+  const totalAvailable = candidates.reduce((total, candidate) => total + candidate.quantity, 0);
+
+  return {
+    satisfied: remaining <= 0,
+    totalAvailable,
+    allocations,
+    remaining,
+  };
 }
 
 async function getUncheckedShoppingItems(): Promise<ShoppingItem[]> {
@@ -490,11 +814,57 @@ export async function toggleShoppingItemChecked(item: ShoppingItem) {
     updatedAt: serverTimestamp(),
   });
 
-  if (isNowChecked) {
+  return isNowChecked;
+}
+
+export async function clearCheckedShoppingItems() {
+  const checkedSnap = await getDocs(
+    query(collection(db, "shoppingList"), where("checked", "==", true))
+  );
+
+  const checkedItems = checkedSnap.docs.map((itemDoc) => ({
+    ...(itemDoc.data() as ShoppingItem),
+    id: itemDoc.id,
+  }));
+
+  for (const item of checkedItems) {
     await restockPantryFromShoppingItem(item);
   }
 
-  return isNowChecked;
+  const batch = writeBatch(db);
+  checkedSnap.docs.forEach((itemDoc) => {
+    batch.delete(itemDoc.ref);
+  });
+  await batch.commit();
+
+  return checkedItems.length;
+}
+
+export async function clearAllShoppingItems() {
+  const allSnap = await getDocs(collection(db, "shoppingList"));
+  const checkedItems: ShoppingItem[] = [];
+
+  allSnap.docs.forEach((itemDoc) => {
+    const item = { ...(itemDoc.data() as ShoppingItem), id: itemDoc.id };
+    if (item.checked) {
+      checkedItems.push(item);
+    }
+  });
+
+  for (const item of checkedItems) {
+    await restockPantryFromShoppingItem(item);
+  }
+
+  const batch = writeBatch(db);
+  allSnap.docs.forEach((itemDoc) => {
+    batch.delete(itemDoc.ref);
+  });
+  await batch.commit();
+
+  return {
+    removed: allSnap.size,
+    restocked: checkedItems.length,
+  };
 }
 
 export async function performPantryAction(
@@ -516,7 +886,7 @@ export async function performPantryAction(
     event_type: actionType === "cooked" ? "consumed" : "expired",
     action_type: actionType,
     delta: currentQty || 1,
-    quantity_changed: 1,
+    quantity_changed: currentQty || 1,
     quantity_after: 0,
     timestamp: serverTimestamp(),
     source: "web-dashboard",
@@ -552,45 +922,58 @@ export async function cookRecipeFromFirestore(recipeId: string) {
 
   const batch = writeBatch(db);
   const deducted: { item_id: string; deducted: number; new_amount: number }[] = [];
+  const missing: string[] = [];
 
   for (const ingredient of recipe.ingredients || []) {
-    const lowerIngredient = ingredient.toLowerCase();
-    const match = pantryItems.find((item) => {
-      const lowerName = item.name?.toLowerCase() || "";
-      return lowerName && (lowerIngredient.includes(lowerName) || lowerName.includes(lowerIngredient));
-    });
-    if (!match) continue;
-
     const amountToDeduct = parseIngredientAmount(ingredient);
-    const currentQty = Number(match.quantity ?? match.amount ?? 0);
-    const newQty = Math.max(0, currentQty - amountToDeduct);
-    match.quantity = newQty;
-    match.amount = newQty;
-    deducted.push({ item_id: match.id, deducted: amountToDeduct, new_amount: newQty });
+    const allocation = allocateIngredientAcrossPantry(ingredient, amountToDeduct, pantryItems);
+    if (!allocation.satisfied) {
+      missing.push(ingredient);
+    }
+  }
 
-    batch.set(
-      doc(db, "pantryItems", match.id),
-      {
-        quantity: newQty,
-        amount: newQty,
-        in_stock: newQty > 0,
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
-    batch.set(doc(collection(db, "usageLogs")), {
-      item_id: match.id,
-      item_name: match.name,
-      recipe_id: recipeId,
-      recipe_title: recipe.title,
-      event_type: "consumed",
-      action_type: "cooked",
-      delta: amountToDeduct,
-      quantity_changed: 1,
-      quantity_after: newQty,
-      timestamp: serverTimestamp(),
-      source: "web-dashboard",
-    });
+  if (missing.length > 0) {
+    throw new Error(`Missing or insufficient pantry items: ${missing.join(", ")}`);
+  }
+
+  for (const ingredient of recipe.ingredients || []) {
+    const amountToDeduct = parseIngredientAmount(ingredient);
+    const allocation = allocateIngredientAcrossPantry(ingredient, amountToDeduct, pantryItems);
+    for (const { item, used } of allocation.allocations) {
+      const currentQty = getItemQuantityValue(item);
+      const newQty = Math.max(0, currentQty - used);
+      item.quantity = newQty;
+      item.amount = newQty;
+      deducted.push({ item_id: item.id, deducted: used, new_amount: newQty });
+
+      if (newQty <= 0) {
+        batch.delete(doc(db, "pantryItems", item.id));
+      } else {
+        batch.set(
+          doc(db, "pantryItems", item.id),
+          {
+            quantity: newQty,
+            amount: newQty,
+            in_stock: true,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+      batch.set(doc(collection(db, "usageLogs")), {
+        item_id: item.id,
+        item_name: item.name,
+        recipe_id: recipeId,
+        recipe_title: recipe.title,
+        event_type: "consumed",
+        action_type: "cooked",
+        delta: used,
+        quantity_changed: used,
+        quantity_after: newQty,
+        timestamp: serverTimestamp(),
+        source: "web-dashboard",
+      });
+    }
   }
 
   await batch.commit();
@@ -598,18 +981,34 @@ export async function cookRecipeFromFirestore(recipeId: string) {
 }
 
 export async function requestRecipeDiscovery() {
-  return addDoc(collection(db, "recipeRequests"), {
+  const requestRef = await addDoc(collection(db, "recipeRequests"), {
     type: "discover",
     status: "pending",
     createdBy: "web-dashboard",
     createdAt: serverTimestamp(),
   });
+  return requestRef.id;
 }
 
 export async function requestSmartShoppingPlan() {
-  return addDoc(collection(db, "smartPlanRequests"), {
+  const requestRef = await addDoc(collection(db, "smartPlanRequests"), {
     status: "pending",
     createdBy: "web-dashboard",
     createdAt: serverTimestamp(),
   });
+  return requestRef.id;
+}
+
+export async function deleteRecipe(recipeId: string) {
+  await deleteDoc(doc(db, "recipes", recipeId));
+}
+
+export async function clearAllRecipes() {
+  const recipeSnap = await getDocs(collection(db, "recipes"));
+  const batch = writeBatch(db);
+  recipeSnap.docs.forEach((recipeDoc) => {
+    batch.delete(recipeDoc.ref);
+  });
+  await batch.commit();
+  return recipeSnap.size;
 }

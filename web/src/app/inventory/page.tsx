@@ -5,8 +5,12 @@ import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import {
   addBarcodeToPantry,
   addPantryItem,
+  allocateIngredientAcrossPantry,
+  clearAllRecipes,
   cookRecipeFromFirestore,
+  deleteRecipe,
   FirestoreTimestamp,
+  getItemQuantityValue,
   PantryItem,
   performPantryAction,
   RecipeItem,
@@ -38,6 +42,52 @@ type RiskState = {
   high_risk_active?: boolean;
   min_humidity_5m?: number;
 };
+type BuySignal = {
+  item_id: string;
+  name: string;
+  signal: "BUY_MORE" | "BUY_LESS" | string;
+  reason: string;
+  score: number;
+  days_until_empty?: number | null;
+  expiry_ratio?: number | null;
+};
+type ManualField = "name" | "category" | "amount" | "unit";
+const RECIPE_FILTER_OPTIONS: Array<{ value: RecipeFilter; label: string }> = [
+  { value: "none", label: "Default" },
+  { value: "match", label: "Best Match" },
+  { value: "time", label: "Fastest" },
+];
+const INGREDIENTS_DB: Record<string, { category: string; unit: string }> = {
+  "Milk": { category: "liquid", unit: "fl oz" },
+  "Water": { category: "liquid", unit: "fl oz" },
+  "Olive Oil": { category: "sauce", unit: "fl oz" },
+  "Vegetable Oil": { category: "sauce", unit: "fl oz" },
+  "Flour": { category: "carb", unit: "cups" },
+  "Sugar": { category: "misc", unit: "cups" },
+  "Rice": { category: "carb", unit: "grams" },
+  "Chicken Breast": { category: "protein", unit: "grams" },
+  "Ground Beef": { category: "protein", unit: "grams" },
+  "Spinach": { category: "veg", unit: "grams" },
+  "Lettuce": { category: "veg", unit: "grams" },
+  "Tomato": { category: "veg", unit: "unit" },
+  "Avocado": { category: "veg", unit: "unit" },
+  "Bread": { category: "carb", unit: "slices" },
+  "Eggs": { category: "protein", unit: "unit" },
+  "Salt": { category: "misc", unit: "tsp" },
+  "Pepper": { category: "misc", unit: "tsp" },
+};
+const TOUCH_ALPHA_ROWS = [
+  ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
+  ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
+  ["z", "x", "c", "v", "b", "n", "m"],
+];
+const TOUCH_NUMERIC_ROWS = [
+  ["1", "2", "3"],
+  ["4", "5", "6"],
+  ["7", "8", "9"],
+  ["0", "."],
+];
+const MANUAL_FIELD_ORDER: ManualField[] = ["name", "category", "amount", "unit"];
 
 export default function InventoryPage() {
   const [activeTab, setActiveTab] = useState<"pantry" | "recipes" | "sustainability" | "analytics">("pantry");
@@ -54,6 +104,7 @@ export default function InventoryPage() {
   const [popCategories, setPopCategories] = useState<PopularCategory[]>([]);
   const [missions, setMissions] = useState<string[]>([]);
   const [unlocks, setUnlocks] = useState<RecipeUnlock[]>([]);
+  const [buySignals, setBuySignals] = useState<BuySignal[]>([]);
 
   // Live Status State
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
@@ -66,36 +117,14 @@ export default function InventoryPage() {
   const [manualExpiry, setManualExpiry] = useState("");
   const [manualAmount, setManualAmount] = useState("1");
   const [manualUnit, setManualUnit] = useState("unit");
+  const [activeManualField, setActiveManualField] = useState<ManualField | null>(null);
   const [scanUpc, setScanUpc] = useState("");
   const [scanStatus, setScanStatus] = useState("");
   const [scanBusy, setScanBusy] = useState(false);
   const scanInputRef = useRef<HTMLInputElement | null>(null);
 
-  const INGREDIENTS_DB: Record<string, { category: string; unit: string }> = {
-    "Milk": { category: "liquid", unit: "fl oz" },
-    "Water": { category: "liquid", unit: "fl oz" },
-    "Olive Oil": { category: "sauce", unit: "fl oz" },
-    "Vegetable Oil": { category: "sauce", unit: "fl oz" },
-    "Flour": { category: "carb", unit: "cups" },
-    "Sugar": { category: "misc", unit: "cups" },
-    "Rice": { category: "carb", unit: "grams" },
-    "Chicken Breast": { category: "protein", unit: "grams" },
-    "Ground Beef": { category: "protein", unit: "grams" },
-    "Spinach": { category: "veg", unit: "grams" },
-    "Lettuce": { category: "veg", unit: "grams" },
-    "Tomato": { category: "veg", unit: "unit" },
-    "Avocado": { category: "veg", unit: "unit" },
-    "Bread": { category: "carb", unit: "slices" },
-    "Eggs": { category: "protein", unit: "unit" },
-    "Salt": { category: "misc", unit: "tsp" },
-    "Pepper": { category: "misc", unit: "tsp" },
-  };
-
-  const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value;
+  const applyManualName = (val: string) => {
     setManualName(val);
-    
-    // Autofill category and unit if matched
     const match = Object.keys(INGREDIENTS_DB).find(k => k.toLowerCase() === val.toLowerCase());
     if (match) {
       setManualCat(INGREDIENTS_DB[match].category);
@@ -103,10 +132,16 @@ export default function InventoryPage() {
     }
   };
 
+  const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    applyManualName(e.target.value);
+  };
+
   // Recipes State
   const [recipesList, setRecipesList] = useState<RecipeItem[]>([]);
   const [loadingRecipes, setLoadingRecipes] = useState(true);
   const [discovering, setDiscovering] = useState(false);
+  const [recipeMaintenanceBusy, setRecipeMaintenanceBusy] = useState(false);
+  const [recipeStatus, setRecipeStatus] = useState("");
   const [expandedRecipe, setExpandedRecipe] = useState<string | null>(null);
   
   // Recipe Filters
@@ -141,6 +176,9 @@ export default function InventoryPage() {
     const unsubUnlocks = subscribeAnalyticsSummary<{ high_impact_purchases?: RecipeUnlock[] }>("recipeUnlocks", (data) => {
       setUnlocks(data?.high_impact_purchases ?? []);
     });
+    const unsubBuySignals = subscribeAnalyticsSummary<{ signals?: BuySignal[] }>("buySignals", (data) => {
+      setBuySignals(data?.signals ?? []);
+    });
     const unsubLiveStatus = subscribeAnalyticsSummary<LiveStatus>("liveStatus", setLiveStatus);
     const unsubLiveTrend = subscribeAnalyticsSummary<LiveTrend>("liveTrend", setLiveTrend);
     const unsubRisk = subscribeAnalyticsSummary<RiskState>("risk", setRiskState);
@@ -154,6 +192,7 @@ export default function InventoryPage() {
       unsubCategories();
       unsubMissions();
       unsubUnlocks();
+      unsubBuySignals();
       unsubLiveStatus();
       unsubLiveTrend();
       unsubRisk();
@@ -223,6 +262,46 @@ export default function InventoryPage() {
     }
   };
 
+  const handleDeleteRecipe = async (recipeId: string, title: string) => {
+    if (!window.confirm(`Remove "${title}" from your recipe book?`)) {
+      return;
+    }
+    try {
+      setRecipeMaintenanceBusy(true);
+      await deleteRecipe(recipeId);
+      setRecipeStatus(`Removed "${title}" from your recipe book.`);
+      if (expandedRecipe === recipeId) {
+        setExpandedRecipe(null);
+      }
+    } catch (e) {
+      console.error("Delete recipe failed", e);
+      setRecipeStatus("Could not remove that recipe. Please try again.");
+    } finally {
+      setRecipeMaintenanceBusy(false);
+    }
+  };
+
+  const handleClearRecipes = async () => {
+    if (recipesList.length === 0) {
+      setRecipeStatus("There are no recipes to clear.");
+      return;
+    }
+    if (!window.confirm(`Clear all ${recipesList.length} saved recipe(s)?`)) {
+      return;
+    }
+    try {
+      setRecipeMaintenanceBusy(true);
+      const removed = await clearAllRecipes();
+      setExpandedRecipe(null);
+      setRecipeStatus(`Cleared ${removed} recipe(s) from your recipe book.`);
+    } catch (e) {
+      console.error("Clear recipes failed", e);
+      setRecipeStatus("Could not clear the recipe book. Please try again.");
+    } finally {
+      setRecipeMaintenanceBusy(false);
+    }
+  };
+
   const filtered = useMemo(() => {
     return items.filter((i) =>
       i.name.toLowerCase().includes(search.toLowerCase())
@@ -245,10 +324,76 @@ export default function InventoryPage() {
     return groups;
   }, [filtered]);
 
+  const updateManualFieldValue = (field: ManualField, value: string) => {
+    if (field === "name") {
+      applyManualName(value);
+      return;
+    }
+    if (field === "category") {
+      setManualCat(value);
+      return;
+    }
+    if (field === "amount") {
+      setManualAmount(value);
+      return;
+    }
+    setManualUnit(value);
+  };
+
+  const getManualFieldValue = (field: ManualField | null) => {
+    if (field === "name") return manualName;
+    if (field === "category") return manualCat;
+    if (field === "amount") return manualAmount;
+    if (field === "unit") return manualUnit;
+    return "";
+  };
+
+  const appendTouchKey = (key: string) => {
+    if (!activeManualField) return;
+    const current = getManualFieldValue(activeManualField);
+    if (activeManualField === "amount" && key === "." && current.includes(".")) {
+      return;
+    }
+    updateManualFieldValue(activeManualField, `${current}${key}`);
+  };
+
+  const backspaceTouchKey = () => {
+    if (!activeManualField) return;
+    const current = getManualFieldValue(activeManualField);
+    updateManualFieldValue(activeManualField, current.slice(0, -1));
+  };
+
+  const clearTouchField = () => {
+    if (!activeManualField) return;
+    updateManualFieldValue(activeManualField, "");
+  };
+
+  const focusNextManualField = () => {
+    if (!activeManualField) {
+      setActiveManualField("name");
+      return;
+    }
+    const index = MANUAL_FIELD_ORDER.indexOf(activeManualField);
+    setActiveManualField(MANUAL_FIELD_ORDER[(index + 1) % MANUAL_FIELD_ORDER.length]);
+  };
+
   const expiringSoon = (expiry?: string) => {
     if (!expiry) return false;
     const diff = (new Date(expiry).getTime() - Date.now()) / 86400000;
     return diff >= 0 && diff <= 3;
+  };
+
+  const parseIngredientAmount = (ingredient: string) => {
+    const match = ingredient.match(/^([\d.]+)/);
+    const value = match ? Number.parseFloat(match[1]) : 1;
+    if (!Number.isFinite(value)) return 1;
+    const lower = ingredient.toLowerCase();
+    if (lower.includes("cup")) return value * 8;
+    if (lower.includes("tbsp") || lower.includes("tablespoon")) return value * 0.5;
+    if (lower.includes("tsp") || lower.includes("teaspoon")) return value * 0.16;
+    if (lower.includes("lb") || lower.includes("pound")) return value * 453.59;
+    if (lower.includes("ml") || lower.includes("milliliter")) return value * 0.0338;
+    return value;
   };
 
   // --- RECIPE LOGIC ---
@@ -265,7 +410,14 @@ export default function InventoryPage() {
   };
 
   // Visual Pantry Matching Engine
-  const pantryStrs = useMemo(() => items.map(i => i.name.toLowerCase()), [items]);
+  const availablePantry = useMemo(
+    () =>
+      items.map((item) => ({
+        ...item,
+        quantity: getItemQuantityValue(item),
+      })),
+    [items]
+  );
   
   const isIngredientHighRisk = (ing: string) => {
     const lower = ing.toLowerCase();
@@ -276,11 +428,22 @@ export default function InventoryPage() {
     let matchedCount = 0;
     let highRiskMatchCount = 0;
     const missing: string[] = [];
-    
-    recipeIngs.forEach(ing => {
-      const lowIng = ing.toLowerCase();
-      if (pantryStrs.some(p => lowIng.includes(p) || p.includes(lowIng))) {
+    const pantryPool = availablePantry.map((item) => ({
+      ...item,
+      quantity: getItemQuantityValue(item),
+      amount: getItemQuantityValue(item),
+    }));
+
+    recipeIngs.forEach((ing) => {
+      const amountNeeded = parseIngredientAmount(ing);
+      const allocation = allocateIngredientAcrossPantry(ing, amountNeeded, pantryPool);
+
+      if (allocation.satisfied) {
         matchedCount++;
+        allocation.allocations.forEach(({ item, used }) => {
+          item.quantity = Math.max(0, getItemQuantityValue(item) - used);
+          item.amount = item.quantity;
+        });
         if (riskState?.high_risk_active && isIngredientHighRisk(ing)) {
           highRiskMatchCount++;
         }
@@ -295,7 +458,7 @@ export default function InventoryPage() {
     const isUnavailable = missingCount > 2;
 
     return { matchedCount, missing, missingCount, is100Percent, isAlmost, isUnavailable, highRiskMatchCount };
-  }, [pantryStrs, riskState]);
+  }, [availablePantry, riskState]);
 
   // Filter & Sorting logic
   const parseTime = (timeStr?: string) => {
@@ -363,7 +526,7 @@ export default function InventoryPage() {
           
           <div className="flex flex-col sm:flex-row gap-4">
             {/* Live Widget */}
-            {liveStatus && liveStatus.temperature && (
+            {liveStatus && liveStatus.temperature !== undefined && (
               <div className="bg-gray-900 border border-gray-700 p-3 rounded-xl min-w-[200px] shadow-sm">
                 <div className="text-xs text-gray-400 uppercase font-semibold mb-2">Live Kitchen Status</div>
                 <div className="flex justify-between items-center text-sm mb-1">
@@ -466,31 +629,19 @@ export default function InventoryPage() {
             <form onSubmit={handleManualAdd} className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col md:flex-row gap-4 items-end shadow-md flex-wrap">
               <div className="flex-1 min-w-[200px]">
                 <label className="block text-xs font-medium text-gray-400 mb-1">Item Name</label>
-                <input required type="text" list="ingredients-list" placeholder="e.g. Olive Oil" value={manualName} onChange={handleNameChange} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
-                <datalist id="ingredients-list">
-                  {Object.keys(INGREDIENTS_DB).map(ing => <option key={ing} value={ing} />)}
-                </datalist>
+                <input required type="text" placeholder="e.g. Olive Oil" value={manualName} onFocus={() => setActiveManualField("name")} onClick={() => setActiveManualField("name")} onChange={handleNameChange} className={`w-full bg-gray-800 border rounded p-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none ${activeManualField === "name" ? "border-emerald-500" : "border-gray-700"}`} />
               </div>
               <div className="flex-1 min-w-[120px]">
                 <label className="block text-xs font-medium text-gray-400 mb-1">Category</label>
-                <input type="text" placeholder="e.g. sauce" list="categories-list" value={manualCat} onChange={e => setManualCat(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
-                <datalist id="categories-list">
-                  <option value="veg" />
-                  <option value="fruit" />
-                  <option value="protein" />
-                  <option value="carb" />
-                  <option value="sauce" />
-                  <option value="liquid" />
-                  <option value="misc" />
-                </datalist>
+                <input type="text" placeholder="e.g. sauce" value={manualCat} onFocus={() => setActiveManualField("category")} onClick={() => setActiveManualField("category")} onChange={e => setManualCat(e.target.value)} className={`w-full bg-gray-800 border rounded p-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none ${activeManualField === "category" ? "border-emerald-500" : "border-gray-700"}`} />
               </div>
               <div className="flex-1 min-w-[100px]">
                 <label className="block text-xs font-medium text-gray-400 mb-1">Amount</label>
-                <input type="number" step="0.01" min="0" value={manualAmount} onChange={e => setManualAmount(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+                <input type="number" step="0.01" min="0" value={manualAmount} onFocus={() => setActiveManualField("amount")} onClick={() => setActiveManualField("amount")} onChange={e => setManualAmount(e.target.value)} className={`w-full bg-gray-800 border rounded p-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none ${activeManualField === "amount" ? "border-emerald-500" : "border-gray-700"}`} />
               </div>
               <div className="flex-1 min-w-[80px]">
                 <label className="block text-xs font-medium text-gray-400 mb-1">Unit</label>
-                <input type="text" value={manualUnit} onChange={e => setManualUnit(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+                <input type="text" value={manualUnit} onFocus={() => setActiveManualField("unit")} onClick={() => setActiveManualField("unit")} onChange={e => setManualUnit(e.target.value)} className={`w-full bg-gray-800 border rounded p-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none ${activeManualField === "unit" ? "border-emerald-500" : "border-gray-700"}`} />
               </div>
               <div className="flex-1 min-w-[150px]">
                 <label className="block text-xs font-medium text-gray-400 mb-1">Expiry Date</label>
@@ -500,6 +651,68 @@ export default function InventoryPage() {
                 + Add Item
               </button>
             </form>
+
+            {activeManualField && (
+              <div className="rounded-xl border border-emerald-900/50 bg-gray-900/90 p-4 shadow-md">
+                <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-emerald-300">On-Screen Keyboard</p>
+                    <p className="text-xs text-gray-500">
+                      Editing {activeManualField === "name" ? "Item Name" : activeManualField === "category" ? "Category" : activeManualField === "amount" ? "Amount" : "Unit"}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={clearTouchField} className="rounded border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700">
+                      Clear
+                    </button>
+                    <button type="button" onClick={focusNextManualField} className="rounded border border-emerald-800 bg-emerald-950/30 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-900/30">
+                      Next
+                    </button>
+                    <button type="button" onClick={() => setActiveManualField(null)} className="rounded border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700">
+                      Done
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mb-4 rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2 text-sm text-gray-200">
+                  {getManualFieldValue(activeManualField) || <span className="text-gray-500">Tap keys to enter text...</span>}
+                </div>
+
+                <div className="space-y-2">
+                  {(activeManualField === "amount" ? TOUCH_NUMERIC_ROWS : TOUCH_ALPHA_ROWS).map((row, index) => (
+                    <div key={index} className="flex flex-wrap justify-center gap-2">
+                      {row.map((key) => (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => appendTouchKey(key)}
+                          className="min-w-[52px] rounded-lg border border-gray-700 bg-gray-800 px-4 py-3 text-base font-medium text-gray-100 hover:bg-gray-700 active:bg-gray-600"
+                        >
+                          {key}
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+
+                  {activeManualField !== "amount" ? (
+                    <div className="flex flex-wrap justify-center gap-2">
+                      <button type="button" onClick={() => appendTouchKey(" ")} className="min-w-[140px] rounded-lg border border-gray-700 bg-gray-800 px-4 py-3 text-base font-medium text-gray-100 hover:bg-gray-700 active:bg-gray-600">
+                        Space
+                      </button>
+                      <button type="button" onClick={backspaceTouchKey} className="min-w-[100px] rounded-lg border border-amber-900/60 bg-amber-950/30 px-4 py-3 text-base font-medium text-amber-200 hover:bg-amber-900/30 active:bg-amber-900/50">
+                        Backspace
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap justify-center gap-2">
+                      <button type="button" onClick={backspaceTouchKey} className="min-w-[140px] rounded-lg border border-amber-900/60 bg-amber-950/30 px-4 py-3 text-base font-medium text-amber-200 hover:bg-amber-900/30 active:bg-amber-900/50">
+                        Backspace
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Search */}
             <input type="search" placeholder="Search items..." value={search} onChange={(e) => setSearch(e.target.value)} className="w-full px-4 py-3 rounded-xl bg-gray-900 border border-gray-800 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm" />
@@ -562,23 +775,42 @@ export default function InventoryPage() {
                   {discovering && <span className="text-xs bg-emerald-900/60 text-emerald-300 px-2 py-0.5 rounded-full animate-pulse border border-emerald-800">Chef is writing...</span>}
                 </h2>
                 <p className="text-sm text-gray-400 mt-1">Visually spot what you can make right now based on pantry matches.</p>
+                {recipeStatus && (
+                  <p className={`text-sm mt-3 ${recipeStatus.toLowerCase().includes("could not") ? "text-red-400" : "text-amber-300"}`}>
+                    {recipeStatus}
+                  </p>
+                )}
               </div>
               <div className="flex flex-col sm:flex-row gap-3">
-                <select 
-                  value={recipeFilter} 
-                  onChange={(e) => setRecipeFilter(e.target.value as RecipeFilter)}
-                  className="bg-gray-800 border border-gray-700 rounded-lg p-2.5 text-sm text-gray-200 outline-none hover:bg-gray-700 transition-colors font-medium cursor-pointer shadow-sm"
-                >
-                  <option value="none">Default Scan</option>
-                  <option value="match">High Matching First</option>
-                  <option value="time">Fastest Time First</option>
-                </select>
+                <div className="flex flex-wrap gap-2 rounded-lg border border-gray-700 bg-gray-800 p-1 shadow-sm">
+                  {RECIPE_FILTER_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setRecipeFilter(option.value)}
+                      className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                        recipeFilter === option.value
+                          ? "bg-emerald-600 text-white"
+                          : "text-gray-300 hover:bg-gray-700"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
                 <button 
                   onClick={discoverNewRecipes}
                   disabled={discovering}
                   className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium px-5 py-2.5 rounded-lg transition-colors flex items-center gap-2 shadow"
                 >
                   {discovering ? "Thinking..." : "✨ Discover"}
+                </button>
+                <button
+                  onClick={handleClearRecipes}
+                  disabled={recipeMaintenanceBusy || recipesList.length === 0}
+                  className="bg-red-950/40 hover:bg-red-900/40 disabled:opacity-50 text-red-300 border border-red-900/60 font-medium px-5 py-2.5 rounded-lg transition-colors"
+                >
+                  Clear Recipes
                 </button>
               </div>
             </div>
@@ -695,11 +927,19 @@ export default function InventoryPage() {
                         </button>
                         <button 
                           onClick={() => r.id && handleCookRecipe(r.id)}
+                          disabled={!state.is100Percent || !r.id}
                           className={`flex-1 text-center text-sm border rounded font-semibold transition-colors py-1 ${
-                            state.is100Percent ? 'text-white bg-emerald-600 hover:bg-emerald-500 border-none' : 'text-gray-400 bg-gray-800 border-gray-700 hover:bg-gray-700'
+                            state.is100Percent ? 'text-white bg-emerald-600 hover:bg-emerald-500 border-none' : 'text-gray-400 bg-gray-800 border-gray-700 opacity-60 cursor-not-allowed'
                           }`}
                         >
-                          Cook Recipe
+                          {state.is100Percent ? "Cook Recipe" : "Need Ingredients"}
+                        </button>
+                        <button
+                          onClick={() => r.id && handleDeleteRecipe(r.id, r.title)}
+                          disabled={recipeMaintenanceBusy || !r.id}
+                          className="px-3 text-center text-sm border rounded font-semibold transition-colors py-1 text-red-300 bg-red-950/30 border-red-900/60 hover:bg-red-900/40 disabled:opacity-50"
+                        >
+                          Remove
                         </button>
                       </div>
                     </div>
@@ -803,6 +1043,36 @@ export default function InventoryPage() {
                  )}
               </div>
 
+            </div>
+
+            <div className="bg-gray-900/50 border border-gray-800 p-6 rounded-xl">
+              <h2 className="text-lg font-bold text-gray-200 mb-4">Buy Signals</h2>
+              {buySignals.length > 0 ? (
+                <div className="space-y-3">
+                  {buySignals.map((signal) => (
+                    <div key={`${signal.signal}-${signal.item_id}`} className="rounded-lg border border-gray-800 bg-gray-900/70 p-4">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <div className="font-semibold text-gray-100">{signal.name}</div>
+                          <div className="text-sm text-gray-400">{signal.reason}</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${
+                            signal.signal === "BUY_MORE"
+                              ? "bg-emerald-900/40 text-emerald-300"
+                              : "bg-amber-900/40 text-amber-300"
+                          }`}>
+                            {signal.signal === "BUY_MORE" ? "Buy More" : "Buy Less"}
+                          </span>
+                          <span className="text-xs text-gray-500">Score {signal.score}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-gray-500">No strong buy signals in the current lookback window.</div>
+              )}
             </div>
 
             <div className="bg-indigo-950/20 border border-indigo-900/40 p-6 rounded-xl">

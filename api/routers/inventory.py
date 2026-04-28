@@ -137,7 +137,7 @@ def perform_inventory_action(request: ActionRequest):
         "event_type": "consumed" if request.action_type == "cooked" else "expired",
         "action_type": request.action_type,
         "delta": current_qty or 1,
-        "quantity_changed": 1,
+        "quantity_changed": current_qty or 1,
         "quantity_after": 0,
         "timestamp": datetime.now(timezone.utc),
         "source": "api-compat",

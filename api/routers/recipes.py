@@ -187,7 +187,7 @@ def cook_recipe(recipe_id: str):
                     "event_type": "consumed",
                     "action_type": "cooked",
                     "delta": amount_to_deduct,
-                    "quantity_changed": 1,
+                    "quantity_changed": amount_to_deduct,
                     "quantity_after": new_qty,
                     "timestamp": datetime.now(timezone.utc),
                     "source": "api-compat",

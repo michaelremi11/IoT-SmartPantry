@@ -6,12 +6,16 @@ import { useEffect, useRef, useState } from "react";
 import {
   addBarcodeToShoppingList,
   addShoppingItem,
+  clearAllShoppingItems,
+  clearCheckedShoppingItems,
   requestSmartShoppingPlan,
   SmartShoppingPlan,
   subscribeSmartShoppingPlan,
   subscribeShoppingList,
+  subscribeWorkerRequestStatus,
   ShoppingItem,
   toggleShoppingItemChecked,
+  WorkerRequestStatus,
 } from "@/lib/firestore";
 
 export default function ShoppingPage() {
@@ -24,6 +28,9 @@ export default function ShoppingPage() {
   const scanInputRef = useRef<HTMLInputElement | null>(null);
   const [smartPlan, setSmartPlan] = useState<SmartShoppingPlan | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [planRequestId, setPlanRequestId] = useState("");
+  const [planStatus, setPlanStatus] = useState("");
+  const [listStatus, setListStatus] = useState("");
 
   useEffect(() => {
     const unsub = subscribeShoppingList((data) => {
@@ -36,6 +43,39 @@ export default function ShoppingPage() {
       unsubPlan();
     };
   }, []);
+
+  useEffect(() => {
+    if (!planRequestId) return;
+
+    const unsub = subscribeWorkerRequestStatus(
+      "smartPlanRequests",
+      planRequestId,
+      (request: WorkerRequestStatus | null) => {
+        if (!request) return;
+        if (request.status === "pending") {
+          setPlanStatus("Smart weekly plan queued. Waiting for the worker...");
+          return;
+        }
+        if (request.status === "processing") {
+          setPlanStatus("Smart weekly plan is being generated...");
+          return;
+        }
+        if (request.status === "complete") {
+          setGenerating(false);
+          setPlanStatus("Smart weekly plan refreshed.");
+          setPlanRequestId("");
+          return;
+        }
+        if (request.status === "error") {
+          setGenerating(false);
+          setPlanStatus(request.error || "Smart weekly plan failed.");
+          setPlanRequestId("");
+        }
+      }
+    );
+
+    return unsub;
+  }, [planRequestId]);
 
   const toggleChecked = async (item: ShoppingItem) => {
     try {
@@ -80,10 +120,14 @@ export default function ShoppingPage() {
 
   const generateSmartPlan = async () => {
     setGenerating(true);
+    setPlanStatus("");
     try {
-      await requestSmartShoppingPlan();
-    } catch(e) {
+      const requestId = await requestSmartShoppingPlan();
+      setPlanRequestId(requestId);
+      setPlanStatus("Smart weekly plan queued. Waiting for the worker...");
+    } catch (e) {
       console.error(e);
+      setPlanStatus("Could not queue the smart weekly plan.");
     } finally {
       setGenerating(false);
     }
@@ -96,12 +140,62 @@ export default function ShoppingPage() {
     });
   };
 
+  const clearPurchased = async () => {
+    const checkedCount = items.filter((item) => item.checked).length;
+    if (checkedCount === 0) {
+      setListStatus("No checked items to clear yet.");
+      return;
+    }
+    if (!window.confirm(`Clear ${checkedCount} checked item(s) and add them to pantry inventory?`)) {
+      return;
+    }
+    try {
+      const removed = await clearCheckedShoppingItems();
+      setListStatus(`Cleared ${removed} purchased item(s) and added them to inventory.`);
+    } catch (error) {
+      console.error("Failed to clear purchased items", error);
+      setListStatus("Could not clear checked items.");
+    }
+  };
+
+  const clearEntireList = async () => {
+    if (items.length === 0) {
+      setListStatus("The shopping list is already empty.");
+      return;
+    }
+    if (!window.confirm("Clear the entire shopping list? Checked items will be added to pantry first.")) {
+      return;
+    }
+    try {
+      const result = await clearAllShoppingItems();
+      setListStatus(
+        result.restocked > 0
+          ? `Cleared ${result.removed} item(s). ${result.restocked} checked item(s) were added to inventory.`
+          : `Cleared ${result.removed} item(s) from the shopping list.`
+      );
+    } catch (error) {
+      console.error("Failed to clear shopping list", error);
+      setListStatus("Could not clear the shopping list.");
+    }
+  };
+
+  const checkedCount = items.filter((item) => item.checked).length;
+  const hasSmartPlanSuggestions = Boolean(
+    smartPlan &&
+      ((smartPlan.staples?.length ?? 0) > 0 ||
+        (smartPlan.unlocks?.length ?? 0) > 0 ||
+        (smartPlan.waste_prevention?.length ?? 0) > 0)
+  );
+
   return (
     <main className="min-h-screen bg-gray-950 text-gray-100 p-8">
       <div className="max-w-2xl mx-auto">
         <h1 className="text-3xl font-bold text-sky-400 mb-2">🛒 Shopping List</h1>
         <p className="text-gray-400 mb-6">
           Add items here — they&apos;ll appear on the kitchen hub instantly
+        </p>
+        <p className="text-xs text-gray-500 mb-6">
+          Checked items stay on the list until you clear them, so you can change your mind before they are added to inventory.
         </p>
 
         <form onSubmit={handleBarcodeScan} className="mb-5 bg-sky-950/20 border border-sky-900/50 rounded-xl p-4 flex flex-col sm:flex-row gap-3 items-end">
@@ -133,7 +227,8 @@ export default function ShoppingPage() {
           </button>
         </form>
 
-        <div className="flex flex-col sm:flex-row gap-4 mb-6">
+        <div className="flex flex-col gap-4 mb-6">
+          <div className="flex flex-col sm:flex-row gap-4">
           <button 
             onClick={generateSmartPlan} 
             disabled={generating}
@@ -159,7 +254,45 @@ export default function ShoppingPage() {
           >
             Add
           </button>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+            <div className="text-xs text-gray-500">
+              {checkedCount > 0 ? `${checkedCount} item(s) checked and waiting to be cleared.` : "No items are checked yet."}
+            </div>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={clearPurchased}
+                type="button"
+                className="px-4 py-2 rounded-lg border border-emerald-800 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/40 transition-colors"
+              >
+                Clear Purchased
+              </button>
+              <button
+                onClick={clearEntireList}
+                type="button"
+                className="px-4 py-2 rounded-lg border border-red-900/60 bg-red-950/20 text-red-300 hover:bg-red-900/30 transition-colors"
+              >
+                Clear Entire List
+              </button>
+            </div>
+          </div>
         </div>
+
+        {(planStatus || listStatus) && (
+          <div className="mb-6 space-y-2">
+            {planStatus && (
+              <p className={`text-sm ${planStatus.toLowerCase().includes("failed") || planStatus.toLowerCase().includes("could not") ? "text-red-400" : "text-indigo-300"}`}>
+                {planStatus}
+              </p>
+            )}
+            {listStatus && (
+              <p className={`text-sm ${listStatus.toLowerCase().includes("could not") ? "text-red-400" : "text-emerald-300"}`}>
+                {listStatus}
+              </p>
+            )}
+          </div>
+        )}
 
         {smartPlan && (
           <div className="mb-8 p-5 bg-indigo-950/20 border border-indigo-900/50 rounded-xl space-y-4 animate-in fade-in slide-in-from-top-4">
@@ -168,6 +301,12 @@ export default function ShoppingPage() {
               <button onClick={() => setSmartPlan(null)} className="text-indigo-500 hover:text-indigo-300 text-sm">Dismiss</button>
             </div>
             
+            {!hasSmartPlanSuggestions && (
+              <p className="text-sm text-gray-400">
+                The latest plan ran successfully, but there are no restock, recipe unlock, or waste-prevention suggestions right now.
+              </p>
+            )}
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                <div>
                   <h3 className="font-bold text-xs uppercase text-gray-500 mb-2">Restock Staples</h3>
@@ -178,6 +317,9 @@ export default function ShoppingPage() {
                         <button onClick={()=>addPlanItem(i.item)} className="bg-sky-900/50 hover:bg-sky-800 text-sky-400 px-2 py-1 rounded text-xs">+</button>
                       </li>
                     ))}
+                    {(smartPlan.staples?.length ?? 0) === 0 && (
+                      <li className="text-sm text-gray-500 bg-gray-900/50 p-2 rounded">Nothing to restock right now.</li>
+                    )}
                   </ul>
                </div>
                <div>
@@ -189,6 +331,9 @@ export default function ShoppingPage() {
                         <button onClick={()=>addPlanItem(i.item)} className="bg-sky-900/50 hover:bg-sky-800 text-sky-400 px-2 py-1 rounded text-xs">+</button>
                       </li>
                     ))}
+                    {(smartPlan.unlocks?.length ?? 0) === 0 && (
+                      <li className="text-sm text-gray-500 bg-gray-900/50 p-2 rounded">No unlock suggestions yet.</li>
+                    )}
                   </ul>
                </div>
                <div>
@@ -200,6 +345,9 @@ export default function ShoppingPage() {
                         <button className="bg-amber-900/30 text-amber-500 px-2 py-1 rounded text-[10px]" disabled>Cook It!</button>
                       </li>
                     ))}
+                    {(smartPlan.waste_prevention?.length ?? 0) === 0 && (
+                      <li className="text-sm text-gray-500 bg-gray-900/50 p-2 rounded">No waste-prevention items right now.</li>
+                    )}
                   </ul>
                </div>
             </div>

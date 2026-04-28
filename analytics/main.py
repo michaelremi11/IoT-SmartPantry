@@ -24,6 +24,7 @@ from analytics.routers.analytics import router as analytics_router
 from analytics.services.firebase_analytics import (
     get_buy_signals,
     get_environment_logs,
+    get_item_quantity_history,
     get_pantry_items,
     utc_now,
 )
@@ -90,16 +91,9 @@ def health() -> dict:
 @app.get("/forecast", response_model=list[ForecastItem])
 def forecast_all() -> list[ForecastItem]:
     db = get_db()
-    since = utc_now() - timedelta(days=30)
     results = []
     for item in get_pantry_items(db):
-        history_docs = (
-            db.collection(os.getenv("FIRESTORE_ANALYTICS_COLLECTION", "analyticsEvents"))
-            .where("itemId", "==", item["id"])
-            .where("timestamp", ">=", since)
-            .stream()
-        )
-        history = [doc.to_dict() for doc in history_docs]
+        history = get_item_quantity_history(db, item["id"], days=30)
         rate = compute_consumption_rate(history)
         days_left = days_until_empty(item.get("quantity", 0), rate)
         results.append(
@@ -123,14 +117,7 @@ def forecast_one(item_id: str) -> ForecastItem:
         raise HTTPException(status_code=404, detail="Item not found")
     item = matches[0]
     db = get_db()
-    since = utc_now() - timedelta(days=30)
-    history_docs = (
-        db.collection(os.getenv("FIRESTORE_ANALYTICS_COLLECTION", "analyticsEvents"))
-        .where("itemId", "==", item_id)
-        .where("timestamp", ">=", since)
-        .stream()
-    )
-    history = [doc.to_dict() for doc in history_docs]
+    history = get_item_quantity_history(db, item_id, days=30)
     rate = compute_consumption_rate(history)
     days_left = days_until_empty(item.get("quantity", 0), rate)
     return ForecastItem(
