@@ -70,6 +70,7 @@ OFF_BASE         = os.getenv("OPEN_FOOD_FACTS_BASE_URL", "https://world.openfood
 OFF_FIELDS       = "product_name,quantity,categories_tags,brands,nutriments,image_url"
 PANTRY_COLLECTION = os.getenv("FIRESTORE_PANTRY_COLLECTION", "pantryItems")
 USAGE_LOGS_COLLECTION = os.getenv("FIRESTORE_USAGE_LOGS_COLLECTION", "usageLogs")
+HOUSEHOLD_ID = os.getenv("SMART_PANTRY_HOUSEHOLD_ID", "default")
 
 # SQLite file lives beside the hub package
 _DB_PATH = Path(os.getenv(
@@ -260,6 +261,7 @@ def add_lookup_to_inventory(data: dict, source: str = "barcode-scan") -> dict:
     if sku:
         existing_docs = list(
             db.collection(PANTRY_COLLECTION)
+            .where("householdId", "==", HOUSEHOLD_ID)
             .where("barcode", "==", sku)
             .limit(1)
             .stream()
@@ -272,6 +274,7 @@ def add_lookup_to_inventory(data: dict, source: str = "barcode-scan") -> dict:
         new_qty = current_qty + quantity_to_add
         doc.reference.set(
             {
+                "householdId": HOUSEHOLD_ID,
                 "name": current.get("name") or name,
                 "barcode": sku,
                 "quantity": new_qty,
@@ -292,6 +295,7 @@ def add_lookup_to_inventory(data: dict, source: str = "barcode-scan") -> dict:
         doc_ref = db.collection(PANTRY_COLLECTION).document()
         doc_ref.set(
             {
+                "householdId": HOUSEHOLD_ID,
                 "name": name,
                 "barcode": sku,
                 "quantity": quantity_to_add,
@@ -312,6 +316,7 @@ def add_lookup_to_inventory(data: dict, source: str = "barcode-scan") -> dict:
 
     db.collection(USAGE_LOGS_COLLECTION).document().set(
         {
+            "householdId": HOUSEHOLD_ID,
             "item_id": item_id,
             "item_name": name,
             "sku": sku or None,

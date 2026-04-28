@@ -17,8 +17,11 @@ import {
   toggleShoppingItemChecked,
   WorkerRequestStatus,
 } from "@/lib/firestore";
+import { useAuth } from "@/components/auth-provider";
 
 export default function ShoppingPage() {
+  const { user, loading: authLoading } = useAuth();
+  const householdId = user?.householdId || "";
   const [items, setItems] = useState<ShoppingItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [newItem, setNewItem] = useState("");
@@ -33,16 +36,23 @@ export default function ShoppingPage() {
   const [listStatus, setListStatus] = useState("");
 
   useEffect(() => {
-    const unsub = subscribeShoppingList((data) => {
+    if (!householdId) {
+      if (!authLoading) {
+        setLoading(false);
+      }
+      return;
+    }
+
+    const unsub = subscribeShoppingList(householdId, (data) => {
       setItems(data);
       setLoading(false);
     });
-    const unsubPlan = subscribeSmartShoppingPlan(setSmartPlan);
+    const unsubPlan = subscribeSmartShoppingPlan(householdId, setSmartPlan);
     return () => {
       unsub();
       unsubPlan();
     };
-  }, []);
+  }, [authLoading, householdId]);
 
   useEffect(() => {
     if (!planRequestId) return;
@@ -90,6 +100,7 @@ export default function ShoppingPage() {
     const name = newItem.trim();
     if (!name) return;
     await addShoppingItem({
+      householdId,
       name,
       unit: "unit",
       addedBy: "web-dashboard",
@@ -105,7 +116,7 @@ export default function ShoppingPage() {
     setScanBusy(true);
     setScanStatus(`Looking up UPC ${upc}...`);
     try {
-      const result = await addBarcodeToShoppingList(upc);
+      const result = await addBarcodeToShoppingList(upc, householdId);
       const verb = result.action === "incremented" ? "Updated" : "Added";
       setScanStatus(`${verb}: ${result.name} (+${result.quantity_added})`);
       setScanUpc("");
@@ -122,7 +133,7 @@ export default function ShoppingPage() {
     setGenerating(true);
     setPlanStatus("");
     try {
-      const requestId = await requestSmartShoppingPlan();
+      const requestId = await requestSmartShoppingPlan(householdId);
       setPlanRequestId(requestId);
       setPlanStatus("Smart weekly plan queued. Waiting for the worker...");
     } catch (e) {
@@ -135,6 +146,7 @@ export default function ShoppingPage() {
 
   const addPlanItem = async (name: string) => {
     await addShoppingItem({
+      householdId,
       name,
       addedBy: "analytics-auto",
     });
@@ -150,7 +162,7 @@ export default function ShoppingPage() {
       return;
     }
     try {
-      const removed = await clearCheckedShoppingItems();
+      const removed = await clearCheckedShoppingItems(householdId);
       setListStatus(`Cleared ${removed} purchased item(s) and added them to inventory.`);
     } catch (error) {
       console.error("Failed to clear purchased items", error);
@@ -167,7 +179,7 @@ export default function ShoppingPage() {
       return;
     }
     try {
-      const result = await clearAllShoppingItems();
+      const result = await clearAllShoppingItems(householdId);
       setListStatus(
         result.restocked > 0
           ? `Cleared ${result.removed} item(s). ${result.restocked} checked item(s) were added to inventory.`
@@ -186,6 +198,22 @@ export default function ShoppingPage() {
         (smartPlan.unlocks?.length ?? 0) > 0 ||
         (smartPlan.waste_prevention?.length ?? 0) > 0)
   );
+
+  if (authLoading) {
+    return (
+      <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center p-8">
+        <p className="text-gray-500">Loading account...</p>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center p-8">
+        <p className="text-gray-500">Sign in on the home page to open your shopping list.</p>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-gray-950 text-gray-100 p-8">

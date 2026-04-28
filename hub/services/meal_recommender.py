@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 OLLAMA_URL     = os.getenv("OLLAMA_URL",      "http://127.0.0.1:11434/api/generate")
 OLLAMA_MODEL   = os.getenv("OLLAMA_MODEL",    "llama3.2:1b")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_S", "60"))
+HOUSEHOLD_ID   = os.getenv("SMART_PANTRY_HOUSEHOLD_ID", "default")
 
 # ---------------------------------------------------------------------------
 # Prompt template — optimised for Llama 3.2 1B instruction-following
@@ -85,7 +86,10 @@ def get_meal_recommendations(db=None, max_items: int = 20) -> list[dict]:
     try:
         db = db or get_db()
         collection_name = os.getenv("FIRESTORE_PANTRY_COLLECTION", "pantryItems")
-        docs = [doc.to_dict() or {} for doc in db.collection(collection_name).stream()]
+        docs = [
+            doc.to_dict() or {}
+            for doc in db.collection(collection_name).where("householdId", "==", HOUSEHOLD_ID).stream()
+        ]
     except Exception as exc:
         logger.warning("[MealRecommender] Could not fetch inventory from Firestore: %s", exc)
         return []

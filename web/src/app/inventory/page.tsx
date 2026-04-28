@@ -10,15 +10,20 @@ import {
   cookRecipeFromFirestore,
   deleteRecipe,
   FirestoreTimestamp,
+  getComparableItemQuantity,
   getItemQuantityValue,
+  getRecipeIngredientComparableAmount,
+  getRecipeIngredientList,
   PantryItem,
   performPantryAction,
   RecipeItem,
+  recipeIngredientToText,
   requestRecipeDiscovery,
   subscribeAnalyticsSummary,
   subscribePantry,
   subscribeRecipes,
 } from "@/lib/firestore";
+import { useAuth } from "@/components/auth-provider";
 import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 
 type RecipeFilter = "time" | "match" | "none";
@@ -90,6 +95,8 @@ const TOUCH_NUMERIC_ROWS = [
 const MANUAL_FIELD_ORDER: ManualField[] = ["name", "category", "amount", "unit"];
 
 export default function InventoryPage() {
+  const { user, loading: authLoading } = useAuth();
+  const householdId = user?.householdId || "";
   const [activeTab, setActiveTab] = useState<"pantry" | "recipes" | "sustainability" | "analytics">("pantry");
 
   // Pantry State
@@ -148,40 +155,47 @@ export default function InventoryPage() {
   const [recipeFilter, setRecipeFilter] = useState<RecipeFilter>("none");
 
   useEffect(() => {
-    const unsubPantry = subscribePantry((data) => {
+    if (!householdId) {
+      if (!authLoading) {
+        setLoading(false);
+        setLoadingRecipes(false);
+      }
+      return;
+    }
+
+    const unsubPantry = subscribePantry(householdId, (data) => {
       setItems(data);
       setLoading(false);
     });
     
-    // Subscribe directly to Firebase for recipes!
-    const unsubRecipes = subscribeRecipes((data) => {
+    const unsubRecipes = subscribeRecipes(householdId, (data) => {
       setRecipesList(data);
       setLoadingRecipes(false);
     });
-    const unsubSustainability = subscribeAnalyticsSummary<{ sustainability_score?: number }>("sustainability", (data) => {
+    const unsubSustainability = subscribeAnalyticsSummary<{ sustainability_score?: number }>(householdId, "sustainability", (data) => {
       setSustainabilityScore(data?.sustainability_score ?? 100);
     });
-    const unsubWaste = subscribeAnalyticsSummary<{ waste_report?: WasteReportRow[] }>("wasteReport", (data) => {
+    const unsubWaste = subscribeAnalyticsSummary<{ waste_report?: WasteReportRow[] }>(householdId, "wasteReport", (data) => {
       setWasteReport(data?.waste_report ?? []);
     });
-    const unsubHistorical = subscribeAnalyticsSummary<{ trend?: HistoricalScorePoint[] }>("historicalSustainability", (data) => {
+    const unsubHistorical = subscribeAnalyticsSummary<{ trend?: HistoricalScorePoint[] }>(householdId, "historicalSustainability", (data) => {
       setHistoricalScore(data?.trend ?? []);
     });
-    const unsubCategories = subscribeAnalyticsSummary<{ categories?: PopularCategory[] }>("popularCategories", (data) => {
+    const unsubCategories = subscribeAnalyticsSummary<{ categories?: PopularCategory[] }>(householdId, "popularCategories", (data) => {
       setPopCategories(data?.categories ?? []);
     });
-    const unsubMissions = subscribeAnalyticsSummary<{ missions?: string[] }>("missions", (data) => {
+    const unsubMissions = subscribeAnalyticsSummary<{ missions?: string[] }>(householdId, "missions", (data) => {
       setMissions(data?.missions ?? []);
     });
-    const unsubUnlocks = subscribeAnalyticsSummary<{ high_impact_purchases?: RecipeUnlock[] }>("recipeUnlocks", (data) => {
+    const unsubUnlocks = subscribeAnalyticsSummary<{ high_impact_purchases?: RecipeUnlock[] }>(householdId, "recipeUnlocks", (data) => {
       setUnlocks(data?.high_impact_purchases ?? []);
     });
-    const unsubBuySignals = subscribeAnalyticsSummary<{ signals?: BuySignal[] }>("buySignals", (data) => {
+    const unsubBuySignals = subscribeAnalyticsSummary<{ signals?: BuySignal[] }>(householdId, "buySignals", (data) => {
       setBuySignals(data?.signals ?? []);
     });
-    const unsubLiveStatus = subscribeAnalyticsSummary<LiveStatus>("liveStatus", setLiveStatus);
-    const unsubLiveTrend = subscribeAnalyticsSummary<LiveTrend>("liveTrend", setLiveTrend);
-    const unsubRisk = subscribeAnalyticsSummary<RiskState>("risk", setRiskState);
+    const unsubLiveStatus = subscribeAnalyticsSummary<LiveStatus>(householdId, "liveStatus", setLiveStatus);
+    const unsubLiveTrend = subscribeAnalyticsSummary<LiveTrend>(householdId, "liveTrend", setLiveTrend);
+    const unsubRisk = subscribeAnalyticsSummary<RiskState>(householdId, "risk", setRiskState);
 
     return () => {
       unsubPantry();
@@ -197,11 +211,11 @@ export default function InventoryPage() {
       unsubLiveTrend();
       unsubRisk();
     };
-  }, []);
+  }, [authLoading, householdId]);
 
   const handleAction = async (itemId: string, actionType: "cooked" | "discarded") => {
     try {
-      await performPantryAction(itemId, actionType);
+      await performPantryAction(itemId, actionType, householdId);
     } catch (e) {
       console.error("Action failed", e);
       window.alert("Could not update this pantry item. Please try again.");
@@ -214,6 +228,7 @@ export default function InventoryPage() {
     if (!manualName) return;
     try {
       await addPantryItem({
+        householdId,
         name: manualName,
         category: manualCat || "misc",
         quantity: parseFloat(manualAmount) || 1,
@@ -239,7 +254,7 @@ export default function InventoryPage() {
     setScanBusy(true);
     setScanStatus(`Looking up UPC ${upc}...`);
     try {
-      const result = await addBarcodeToPantry(upc);
+      const result = await addBarcodeToPantry(upc, householdId);
       const verb = result.action === "restocked" ? "Restocked" : "Added";
       setScanStatus(`${verb}: ${result.name} (+${result.quantity_added} ${result.unit})`);
       setScanUpc("");
@@ -254,7 +269,7 @@ export default function InventoryPage() {
 
   const handleCookRecipe = async (recipeId: string) => {
     try {
-      await cookRecipeFromFirestore(recipeId);
+      await cookRecipeFromFirestore(recipeId, householdId);
       alert("Recipe ingredients deducted from pantry!");
     } catch (e) {
       console.error("Cook recipe failed", e);
@@ -291,7 +306,7 @@ export default function InventoryPage() {
     }
     try {
       setRecipeMaintenanceBusy(true);
-      const removed = await clearAllRecipes();
+      const removed = await clearAllRecipes(householdId);
       setExpandedRecipe(null);
       setRecipeStatus(`Cleared ${removed} recipe(s) from your recipe book.`);
     } catch (e) {
@@ -383,24 +398,11 @@ export default function InventoryPage() {
     return diff >= 0 && diff <= 3;
   };
 
-  const parseIngredientAmount = (ingredient: string) => {
-    const match = ingredient.match(/^([\d.]+)/);
-    const value = match ? Number.parseFloat(match[1]) : 1;
-    if (!Number.isFinite(value)) return 1;
-    const lower = ingredient.toLowerCase();
-    if (lower.includes("cup")) return value * 8;
-    if (lower.includes("tbsp") || lower.includes("tablespoon")) return value * 0.5;
-    if (lower.includes("tsp") || lower.includes("teaspoon")) return value * 0.16;
-    if (lower.includes("lb") || lower.includes("pound")) return value * 453.59;
-    if (lower.includes("ml") || lower.includes("milliliter")) return value * 0.0338;
-    return value;
-  };
-
   // --- RECIPE LOGIC ---
   const discoverNewRecipes = async () => {
     setDiscovering(true);
     try {
-      await requestRecipeDiscovery();
+      await requestRecipeDiscovery(householdId);
     } catch (e) {
       console.error("Discovery failed", e);
       window.alert("Could not queue recipe discovery. Please try again.");
@@ -419,40 +421,42 @@ export default function InventoryPage() {
     [items]
   );
   
-  const isIngredientHighRisk = (ing: string) => {
-    const lower = ing.toLowerCase();
+  const isIngredientHighRisk = (ingredientText: string) => {
+    const lower = ingredientText.toLowerCase();
     return lower.includes("spinach") || lower.includes("bread") || lower.includes("lettuce") || lower.includes("tomato") || lower.includes("avocado") || lower.includes("fruit") || lower.includes("avocado toast");
   };
   
-  const getRecipeVisualState = useCallback((recipeIngs: string[]) => {
+  const getRecipeVisualState = useCallback((recipeIngs: RecipeItem["ingredients"]) => {
     let matchedCount = 0;
     let highRiskMatchCount = 0;
     const missing: string[] = [];
+    const normalizedIngredients = getRecipeIngredientList(recipeIngs);
     const pantryPool = availablePantry.map((item) => ({
       ...item,
-      quantity: getItemQuantityValue(item),
-      amount: getItemQuantityValue(item),
+      quantity: getComparableItemQuantity(item),
+      amount: getComparableItemQuantity(item),
     }));
 
-    recipeIngs.forEach((ing) => {
-      const amountNeeded = parseIngredientAmount(ing);
-      const allocation = allocateIngredientAcrossPantry(ing, amountNeeded, pantryPool);
+    normalizedIngredients.forEach((ingredient) => {
+      const amountNeeded = getRecipeIngredientComparableAmount(ingredient);
+      const allocation = allocateIngredientAcrossPantry(ingredient, amountNeeded, pantryPool);
+      const ingredientText = recipeIngredientToText(ingredient);
 
       if (allocation.satisfied) {
         matchedCount++;
         allocation.allocations.forEach(({ item, used }) => {
-          item.quantity = Math.max(0, getItemQuantityValue(item) - used);
+          item.quantity = Math.max(0, getComparableItemQuantity(item) - used);
           item.amount = item.quantity;
         });
-        if (riskState?.high_risk_active && isIngredientHighRisk(ing)) {
+        if (riskState?.high_risk_active && isIngredientHighRisk(ingredientText)) {
           highRiskMatchCount++;
         }
       } else {
-        missing.push(ing);
+        missing.push(ingredientText);
       }
     });
     
-    const missingCount = recipeIngs.length - matchedCount;
+    const missingCount = normalizedIngredients.length - matchedCount;
     const is100Percent = missingCount === 0;
     const isAlmost = missingCount === 1 || missingCount === 2;
     const isUnavailable = missingCount > 2;
@@ -499,6 +503,22 @@ export default function InventoryPage() {
     const diffHours = (Date.now() / 1000 - timestamp.seconds) / 3600;
     return diffHours < 24;
   };
+
+  if (authLoading) {
+    return (
+      <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center p-8">
+        <p className="text-gray-500">Loading account...</p>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center p-8">
+        <p className="text-gray-500">Sign in on the home page to open your pantry.</p>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-gray-950 text-gray-100 p-8 transition-colors duration-500 relative">
@@ -878,11 +898,12 @@ export default function InventoryPage() {
                         )}
                         
                         <p className={`text-xs font-medium leading-relaxed mt-2 transition-colors duration-500 ${state.isUnavailable ? 'text-gray-500' : 'text-gray-400'}`}>
-                          {r.ingredients.map((ing, i) => {
-                            const isMissing = state.missing.includes(ing);
+                          {getRecipeIngredientList(r.ingredients).map((ingredient, i) => {
+                            const ingredientText = recipeIngredientToText(ingredient);
+                            const isMissing = state.missing.includes(ingredientText);
                             return (
                               <span key={i} className={isMissing ? "text-red-400/80 line-through decoration-red-900/50" : (state.is100Percent ? "text-emerald-200" : "")}>
-                                {ing}{i < r.ingredients.length - 1 ? " • " : ""}
+                                {ingredientText}{i < r.ingredients.length - 1 ? " • " : ""}
                               </span>
                             );
                           })}

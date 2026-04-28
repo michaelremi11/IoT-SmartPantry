@@ -10,7 +10,6 @@ import {
   getDocs,
   onSnapshot,
   query,
-  orderBy,
   where,
   limit,
   serverTimestamp,
@@ -89,8 +88,9 @@ export interface ProductLookup {
 }
 
 export type ShoppingAddSource = "web-dashboard" | "barcode-scan" | "analytics-auto";
+type HouseholdScopedInput = { householdId: string };
 
-type PantryMatchable = Pick<PantryItem, "id" | "name" | "quantity" | "amount">;
+type PantryMatchable = Pick<PantryItem, "id" | "name" | "quantity" | "amount" | "unit">;
 
 type IngredientIdentity = {
   normalized: string;
@@ -98,6 +98,22 @@ type IngredientIdentity = {
   family?: string;
   group?: string;
 };
+
+type UnitDimension = "count" | "volume" | "weight" | "unknown";
+
+export interface RecipeIngredient {
+  item?: string;
+  name: string;
+  amount?: number;
+  unit?: string;
+  canonical?: string;
+  family?: string;
+  group?: string;
+  optional?: boolean;
+  display?: string;
+}
+
+export type StoredRecipeIngredient = string | RecipeIngredient;
 
 const LEADING_MEASUREMENT_PATTERN =
   /^\s*(?:\d+(?:\.\d+)?(?:\/\d+(?:\.\d+)?)?|\d+\/\d+)\s*/;
@@ -133,6 +149,14 @@ const COMMON_INGREDIENT_FILLER = new Set([
   "pound",
   "pounds",
   "small",
+  "extra",
+  "virgin",
+  "whole",
+  "skim",
+  "reduced",
+  "fat",
+  "lowfat",
+  "original",
   "tablespoon",
   "tablespoons",
   "tbsp",
@@ -220,31 +244,106 @@ const FAMILY_GROUP_KEYWORDS: Array<{
     group: "cashew_milk",
     keywords: ["cashew milk"],
   },
+  {
+    family: "oil",
+    group: "olive_oil",
+    keywords: ["olive oil", "extra virgin olive oil"],
+  },
+  {
+    family: "oil",
+    group: "vegetable_oil",
+    keywords: ["vegetable oil", "canola oil"],
+  },
 ];
+
+const UNIT_DEFINITIONS: Record<string, { dimension: UnitDimension; factor: number }> = {
+  unit: { dimension: "count", factor: 1 },
+  units: { dimension: "count", factor: 1 },
+  count: { dimension: "count", factor: 1 },
+  piece: { dimension: "count", factor: 1 },
+  pieces: { dimension: "count", factor: 1 },
+  item: { dimension: "count", factor: 1 },
+  items: { dimension: "count", factor: 1 },
+  egg: { dimension: "count", factor: 1 },
+  eggs: { dimension: "count", factor: 1 },
+  clove: { dimension: "count", factor: 1 },
+  cloves: { dimension: "count", factor: 1 },
+  slice: { dimension: "count", factor: 1 },
+  slices: { dimension: "count", factor: 1 },
+  cup: { dimension: "volume", factor: 8 },
+  cups: { dimension: "volume", factor: 8 },
+  tbsp: { dimension: "volume", factor: 0.5 },
+  tablespoon: { dimension: "volume", factor: 0.5 },
+  tablespoons: { dimension: "volume", factor: 0.5 },
+  tsp: { dimension: "volume", factor: 1 / 6 },
+  teaspoon: { dimension: "volume", factor: 1 / 6 },
+  teaspoons: { dimension: "volume", factor: 1 / 6 },
+  "fl oz": { dimension: "volume", factor: 1 },
+  floz: { dimension: "volume", factor: 1 },
+  ml: { dimension: "volume", factor: 0.033814 },
+  l: { dimension: "volume", factor: 33.814 },
+  oz: { dimension: "weight", factor: 28.3495 },
+  ounce: { dimension: "weight", factor: 28.3495 },
+  ounces: { dimension: "weight", factor: 28.3495 },
+  lb: { dimension: "weight", factor: 453.592 },
+  lbs: { dimension: "weight", factor: 453.592 },
+  pound: { dimension: "weight", factor: 453.592 },
+  pounds: { dimension: "weight", factor: 453.592 },
+  g: { dimension: "weight", factor: 1 },
+  gram: { dimension: "weight", factor: 1 },
+  grams: { dimension: "weight", factor: 1 },
+  kg: { dimension: "weight", factor: 1000 },
+};
 
 function mapDoc<T>(snap: QuerySnapshot): T[] {
   return snap.docs.map((doc) => ({ id: doc.id, ...doc.data() } as T));
 }
 
+function requireHouseholdId(householdId: string) {
+  const value = householdId.trim();
+  if (!value) {
+    throw new Error("A household is required for this action.");
+  }
+  return value;
+}
+
 /** Subscribe to real-time pantry inventory updates. */
 export function subscribePantry(
+  householdId: string,
   callback: (items: PantryItem[]) => void
 ): Unsubscribe {
-  const q = query(collection(db, "pantryItems"), orderBy("name"));
-  return onSnapshot(q, (snap) => callback(mapDoc<PantryItem>(snap)));
+  const q = query(
+    collection(db, "pantryItems"),
+    where("householdId", "==", requireHouseholdId(householdId))
+  );
+  return onSnapshot(q, (snap) =>
+    callback(mapDoc<PantryItem>(snap).sort((left, right) => left.name.localeCompare(right.name)))
+  );
 }
 
 export function subscribeShoppingList(
+  householdId: string,
   callback: (items: ShoppingItem[]) => void
 ): Unsubscribe {
-  const q = query(collection(db, "shoppingList"), orderBy("addedAt", "desc"));
-  return onSnapshot(q, (snap) => callback(mapDoc<ShoppingItem>(snap)));
+  const q = query(
+    collection(db, "shoppingList"),
+    where("householdId", "==", requireHouseholdId(householdId))
+  );
+  return onSnapshot(q, (snap) =>
+    callback(
+      mapDoc<ShoppingItem>(snap).sort((left, right) => {
+        const leftSeconds = (left.addedAt as unknown as FirestoreTimestamp | undefined)?.seconds ?? 0;
+        const rightSeconds = (right.addedAt as unknown as FirestoreTimestamp | undefined)?.seconds ?? 0;
+        return rightSeconds - leftSeconds;
+      })
+    )
+  );
 }
 
 export interface RecipeItem {
   id?: string;
   title: string;
-  ingredients: string[];
+  ingredients: StoredRecipeIngredient[];
   instructions: string;
   source: string;
   estimated_time?: string;
@@ -253,26 +352,29 @@ export interface RecipeItem {
 
 /** Subscribe to real-time recipe updates. */
 export function subscribeRecipes(
+  householdId: string,
   callback: (items: RecipeItem[]) => void
 ): Unsubscribe {
-  const q = query(collection(db, "recipes"));
+  const q = query(collection(db, "recipes"), where("householdId", "==", requireHouseholdId(householdId)));
   return onSnapshot(q, (snap) => callback(mapDoc<RecipeItem>(snap)));
 }
 
 /** Subscribe to a server-generated analytics summary document. */
 export function subscribeAnalyticsSummary<T>(
+  householdId: string,
   docId: string,
   callback: (data: T | null) => void
 ): Unsubscribe {
-  return onSnapshot(doc(db, "analyticsSummaries", docId), (snap) => {
+  return onSnapshot(doc(db, "analyticsSummaries", `${requireHouseholdId(householdId)}_${docId}`), (snap) => {
     callback(snap.exists() ? ({ id: snap.id, ...snap.data() } as unknown as T) : null);
   });
 }
 
 export function subscribeSmartShoppingPlan(
+  householdId: string,
   callback: (plan: SmartShoppingPlan | null) => void
 ): Unsubscribe {
-  return onSnapshot(doc(db, "smartShoppingPlans", "current"), (snap) => {
+  return onSnapshot(doc(db, "smartShoppingPlans", `${requireHouseholdId(householdId)}_current`), (snap) => {
     callback(snap.exists() ? (snap.data() as SmartShoppingPlan) : null);
   });
 }
@@ -301,9 +403,11 @@ export async function addPantryItem(input: {
   brand?: string;
   image_url?: string;
   source?: string;
-}) {
+} & HouseholdScopedInput) {
   const quantity = Number.isFinite(input.quantity) ? input.quantity : 0;
+  const householdId = requireHouseholdId(input.householdId);
   const docRef = await addDoc(collection(db, "pantryItems"), {
+    householdId,
     name: input.name,
     barcode: input.barcode || "",
     quantity,
@@ -320,6 +424,7 @@ export async function addPantryItem(input: {
   });
 
   await addDoc(collection(db, "usageLogs"), {
+    householdId,
     item_id: docRef.id,
     item_name: input.name,
     event_type: "restocked",
@@ -340,6 +445,128 @@ export function normalizeName(name: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9%/]+/g, " ")
     .replace(/\s+/g, " ");
+}
+
+function parseFractionalNumber(raw: string): number | null {
+  const value = raw.trim();
+  if (!value) {
+    return null;
+  }
+  if (value.includes("/")) {
+    const [numerator, denominator] = value.split("/");
+    const left = Number.parseFloat(numerator);
+    const right = Number.parseFloat(denominator);
+    if (Number.isFinite(left) && Number.isFinite(right) && right !== 0) {
+      return left / right;
+    }
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeUnit(unit?: string): string {
+  return normalizeName(unit || "").replace(/\s+/g, " ").trim();
+}
+
+function getUnitDefinition(unit?: string) {
+  const normalized = normalizeUnit(unit);
+  if (!normalized) {
+    return { normalized: "unit", dimension: "count" as UnitDimension, factor: 1 };
+  }
+  return {
+    normalized,
+    ...(UNIT_DEFINITIONS[normalized] || { dimension: "unknown" as UnitDimension, factor: 1 }),
+  };
+}
+
+function toComparableAmount(amount: number, unit?: string): number {
+  const definition = getUnitDefinition(unit);
+  return amount * definition.factor;
+}
+
+function fromComparableAmount(amount: number, unit?: string): number {
+  const definition = getUnitDefinition(unit);
+  return amount / definition.factor;
+}
+
+function roundComparableAmount(amount: number): number {
+  return Math.round(amount * 1000) / 1000;
+}
+
+function parseLegacyIngredient(raw: string): RecipeIngredient {
+  const trimmed = raw.trim();
+  const match = trimmed.match(
+    /^(\d+(?:\.\d+)?(?:\/\d+(?:\.\d+)?)?|\d+\/\d+)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\s+(.+)$/
+  );
+  if (match) {
+    const amount = parseFractionalNumber(match[1]);
+    const unit = match[2];
+    const name = match[3].trim();
+    return {
+      name,
+      amount: amount ?? 1,
+      unit,
+      canonical: normalizeName(name),
+      display: trimmed,
+    };
+  }
+
+  const amountOnlyMatch = trimmed.match(/^(\d+(?:\.\d+)?(?:\/\d+(?:\.\d+)?)?|\d+\/\d+)\s+(.+)$/);
+  if (amountOnlyMatch) {
+    const amount = parseFractionalNumber(amountOnlyMatch[1]);
+    const name = amountOnlyMatch[2].trim();
+    return {
+      name,
+      amount: amount ?? 1,
+      canonical: normalizeName(name),
+      display: trimmed,
+    };
+  }
+
+  return {
+    name: trimmed,
+    amount: 1,
+    canonical: normalizeName(trimmed),
+    display: trimmed,
+  };
+}
+
+export function coerceRecipeIngredient(ingredient: StoredRecipeIngredient): RecipeIngredient {
+  if (typeof ingredient === "string") {
+    return parseLegacyIngredient(ingredient);
+  }
+  const name = ingredient.name?.trim() || ingredient.item?.trim() || ingredient.display?.trim() || "Unknown ingredient";
+  return {
+    ...ingredient,
+    name,
+    canonical: ingredient.canonical || normalizeName(name),
+    display: ingredient.display || recipeIngredientToText({ ...ingredient, name }),
+  };
+}
+
+export function getRecipeIngredientList(ingredients: StoredRecipeIngredient[]): RecipeIngredient[] {
+  return ingredients.map((ingredient) => coerceRecipeIngredient(ingredient));
+}
+
+export function recipeIngredientToText(ingredient: StoredRecipeIngredient | RecipeIngredient): string {
+  const resolved = typeof ingredient === "string" ? parseLegacyIngredient(ingredient) : ingredient;
+  if (resolved.display?.trim()) {
+    return resolved.display.trim();
+  }
+  const name = resolved.name?.trim() || resolved.item?.trim() || "Unknown ingredient";
+  if (resolved.amount && resolved.unit && normalizeUnit(resolved.unit) !== "unit") {
+    return `${resolved.amount} ${resolved.unit} ${name}`;
+  }
+  if (resolved.amount) {
+    return `${resolved.amount} ${name}`;
+  }
+  return name;
+}
+
+export function getRecipeIngredientComparableAmount(ingredient: StoredRecipeIngredient | RecipeIngredient): number {
+  const resolved = typeof ingredient === "string" ? parseLegacyIngredient(ingredient) : ingredient;
+  const amount = Number.isFinite(resolved.amount) ? Number(resolved.amount) : 1;
+  return toComparableAmount(amount, resolved.unit);
 }
 
 function stripLeadingAmount(text: string): string {
@@ -394,6 +621,17 @@ function classifyIngredientText(text: string): IngredientIdentity {
   };
 }
 
+function classifyStoredIngredient(ingredient: StoredRecipeIngredient | RecipeIngredient): IngredientIdentity {
+  const resolved = typeof ingredient === "string" ? parseLegacyIngredient(ingredient) : ingredient;
+  const reference = resolved.canonical || resolved.name || resolved.item || resolved.display || "";
+  const identity = classifyIngredientText(reference);
+  return {
+    ...identity,
+    family: resolved.family || identity.family,
+    group: resolved.group || identity.group,
+  };
+}
+
 function countTokenOverlap(a: string[], b: string[]): number {
   if (a.length === 0 || b.length === 0) {
     return 0;
@@ -443,12 +681,19 @@ export function getItemQuantityValue(item: PantryMatchable): number {
   return Number(item.quantity ?? item.amount ?? 0);
 }
 
-function getMatchingPantryCandidates<T extends PantryMatchable>(ingredient: string, items: T[]) {
-  const ingredientIdentity = classifyIngredientText(ingredient);
+export function getComparableItemQuantity(item: PantryMatchable): number {
+  return toComparableAmount(getItemQuantityValue(item), item.unit);
+}
+
+function getMatchingPantryCandidates<T extends PantryMatchable>(
+  ingredient: StoredRecipeIngredient | RecipeIngredient,
+  items: T[]
+) {
+  const ingredientIdentity = classifyStoredIngredient(ingredient);
   return items
     .map((item) => ({
       item,
-      quantity: getItemQuantityValue(item),
+      quantity: getComparableItemQuantity(item),
       strength: getIngredientMatchStrength(
         ingredientIdentity,
         classifyIngredientText(item.name || "")
@@ -464,7 +709,7 @@ function getMatchingPantryCandidates<T extends PantryMatchable>(ingredient: stri
 }
 
 export function getIngredientAvailableQuantity<T extends PantryMatchable>(
-  ingredient: string,
+  ingredient: StoredRecipeIngredient | RecipeIngredient,
   items: T[]
 ): number {
   return getMatchingPantryCandidates(ingredient, items).reduce(
@@ -474,7 +719,7 @@ export function getIngredientAvailableQuantity<T extends PantryMatchable>(
 }
 
 export function allocateIngredientAcrossPantry<T extends PantryMatchable>(
-  ingredient: string,
+  ingredient: StoredRecipeIngredient | RecipeIngredient,
   amountNeeded: number,
   items: T[]
 ) {
@@ -504,8 +749,14 @@ export function allocateIngredientAcrossPantry<T extends PantryMatchable>(
   };
 }
 
-async function getUncheckedShoppingItems(): Promise<ShoppingItem[]> {
-  const snap = await getDocs(query(collection(db, "shoppingList"), where("checked", "==", false)));
+async function getUncheckedShoppingItems(householdId: string): Promise<ShoppingItem[]> {
+  const snap = await getDocs(
+    query(
+      collection(db, "shoppingList"),
+      where("householdId", "==", requireHouseholdId(householdId)),
+      where("checked", "==", false)
+    )
+  );
   return snap.docs.map((itemDoc) => ({
     ...(itemDoc.data() as ShoppingItem),
     id: itemDoc.id,
@@ -534,16 +785,17 @@ export async function addShoppingItem(input: {
   brand?: string;
   image_url?: string;
   addedBy?: ShoppingAddSource;
-}) {
+} & HouseholdScopedInput) {
   const name = input.name.trim();
   if (!name) {
     throw new Error("Shopping item name is required.");
   }
+  const householdId = requireHouseholdId(input.householdId);
 
   const quantity = Number.isFinite(input.quantity) && input.quantity && input.quantity > 0
     ? input.quantity
     : 1;
-  const unchecked = await getUncheckedShoppingItems();
+  const unchecked = await getUncheckedShoppingItems(householdId);
   const match = findMatchingShoppingItem(unchecked, {
     name,
     barcode: input.barcode,
@@ -552,6 +804,7 @@ export async function addShoppingItem(input: {
   if (match) {
     const newQuantity = Number(match.quantity || 0) + quantity;
     await updateDoc(doc(db, "shoppingList", match.id), {
+      householdId,
       quantity: newQuantity,
       unit: match.unit || input.unit || "unit",
       category: match.category || input.category || "misc",
@@ -572,6 +825,7 @@ export async function addShoppingItem(input: {
   }
 
   const docRef = await addDoc(collection(db, "shoppingList"), {
+    householdId,
     name,
     quantity,
     unit: input.unit || "unit",
@@ -661,11 +915,17 @@ export async function lookupProductByUpc(upc: string): Promise<ProductLookup> {
   return lookup;
 }
 
-export async function addBarcodeToPantry(upc: string) {
+export async function addBarcodeToPantry(upc: string, householdId: string) {
+  const scopedHouseholdId = requireHouseholdId(householdId);
   const lookup = await lookupProductByUpc(upc);
   const quantityToAdd = quantityFromLookup(lookup);
   const matches = await getDocs(
-    query(collection(db, "pantryItems"), where("barcode", "==", lookup.sku), limit(1))
+    query(
+      collection(db, "pantryItems"),
+      where("householdId", "==", scopedHouseholdId),
+      where("barcode", "==", lookup.sku),
+      limit(1)
+    )
   );
 
   if (!matches.empty) {
@@ -677,6 +937,7 @@ export async function addBarcodeToPantry(upc: string) {
     batch.set(
       doc(db, "pantryItems", itemDoc.id),
       {
+        householdId: scopedHouseholdId,
         name: current.name || lookup.product_name,
         barcode: lookup.sku,
         quantity: newQty,
@@ -692,6 +953,7 @@ export async function addBarcodeToPantry(upc: string) {
       { merge: true }
     );
     batch.set(doc(collection(db, "usageLogs")), {
+      householdId: scopedHouseholdId,
       item_id: itemDoc.id,
       item_name: current.name || lookup.product_name,
       sku: lookup.sku,
@@ -714,6 +976,7 @@ export async function addBarcodeToPantry(upc: string) {
   }
 
   const id = await addPantryItem({
+    householdId: scopedHouseholdId,
     name: lookup.product_name,
     barcode: lookup.sku,
     quantity: quantityToAdd,
@@ -734,9 +997,10 @@ export async function addBarcodeToPantry(upc: string) {
   };
 }
 
-export async function addBarcodeToShoppingList(upc: string) {
+export async function addBarcodeToShoppingList(upc: string, householdId: string) {
   const lookup = await lookupProductByUpc(upc);
   return addShoppingItem({
+    householdId,
     name: lookup.product_name,
     barcode: lookup.sku,
     quantity: 1,
@@ -748,11 +1012,18 @@ export async function addBarcodeToShoppingList(upc: string) {
   });
 }
 
-async function restockPantryFromShoppingItem(item: ShoppingItem) {
+async function restockPantryFromShoppingItem(householdId: string, item: ShoppingItem) {
   const quantity = Number.isFinite(item.quantity) && item.quantity > 0 ? item.quantity : 1;
   const barcode = item.barcode?.trim();
   const matches = barcode
-    ? await getDocs(query(collection(db, "pantryItems"), where("barcode", "==", barcode), limit(1)))
+    ? await getDocs(
+        query(
+          collection(db, "pantryItems"),
+          where("householdId", "==", requireHouseholdId(householdId)),
+          where("barcode", "==", barcode),
+          limit(1)
+        )
+      )
     : null;
 
   if (matches && !matches.empty) {
@@ -764,6 +1035,7 @@ async function restockPantryFromShoppingItem(item: ShoppingItem) {
     batch.set(
       doc(db, "pantryItems", pantryDoc.id),
       {
+        householdId,
         name: current.name || item.name,
         barcode: barcode || current.barcode || "",
         quantity: newQty,
@@ -779,6 +1051,7 @@ async function restockPantryFromShoppingItem(item: ShoppingItem) {
       { merge: true }
     );
     batch.set(doc(collection(db, "usageLogs")), {
+      householdId,
       item_id: pantryDoc.id,
       item_name: current.name || item.name,
       sku: barcode || null,
@@ -795,6 +1068,7 @@ async function restockPantryFromShoppingItem(item: ShoppingItem) {
   }
 
   return addPantryItem({
+    householdId,
     name: item.name,
     barcode: barcode || "",
     quantity,
@@ -817,9 +1091,13 @@ export async function toggleShoppingItemChecked(item: ShoppingItem) {
   return isNowChecked;
 }
 
-export async function clearCheckedShoppingItems() {
+export async function clearCheckedShoppingItems(householdId: string) {
   const checkedSnap = await getDocs(
-    query(collection(db, "shoppingList"), where("checked", "==", true))
+    query(
+      collection(db, "shoppingList"),
+      where("householdId", "==", requireHouseholdId(householdId)),
+      where("checked", "==", true)
+    )
   );
 
   const checkedItems = checkedSnap.docs.map((itemDoc) => ({
@@ -828,7 +1106,7 @@ export async function clearCheckedShoppingItems() {
   }));
 
   for (const item of checkedItems) {
-    await restockPantryFromShoppingItem(item);
+    await restockPantryFromShoppingItem(householdId, item);
   }
 
   const batch = writeBatch(db);
@@ -840,8 +1118,10 @@ export async function clearCheckedShoppingItems() {
   return checkedItems.length;
 }
 
-export async function clearAllShoppingItems() {
-  const allSnap = await getDocs(collection(db, "shoppingList"));
+export async function clearAllShoppingItems(householdId: string) {
+  const allSnap = await getDocs(
+    query(collection(db, "shoppingList"), where("householdId", "==", requireHouseholdId(householdId)))
+  );
   const checkedItems: ShoppingItem[] = [];
 
   allSnap.docs.forEach((itemDoc) => {
@@ -852,7 +1132,7 @@ export async function clearAllShoppingItems() {
   });
 
   for (const item of checkedItems) {
-    await restockPantryFromShoppingItem(item);
+    await restockPantryFromShoppingItem(householdId, item);
   }
 
   const batch = writeBatch(db);
@@ -869,7 +1149,8 @@ export async function clearAllShoppingItems() {
 
 export async function performPantryAction(
   itemId: string,
-  actionType: "cooked" | "discarded"
+  actionType: "cooked" | "discarded",
+  householdId: string
 ) {
   const itemRef = doc(db, "pantryItems", itemId);
   const snap = await getDoc(itemRef);
@@ -880,6 +1161,7 @@ export async function performPantryAction(
   const currentQty = Number(item.quantity ?? item.amount ?? 0);
   const batch = writeBatch(db);
   batch.set(doc(collection(db, "usageLogs")), {
+    householdId: requireHouseholdId(householdId),
     item_id: itemId,
     item_name: item.name,
     sku: item.barcode || null,
@@ -908,27 +1190,31 @@ function parseIngredientAmount(ingredient: string): number {
   return value;
 }
 
-export async function cookRecipeFromFirestore(recipeId: string) {
+export async function cookRecipeFromFirestore(recipeId: string, householdId: string) {
   const recipeSnap = await getDoc(doc(db, "recipes", recipeId));
   if (!recipeSnap.exists()) {
     throw new Error("Recipe not found");
   }
   const recipe = recipeSnap.data() as RecipeItem;
-  const pantrySnap = await getDocs(collection(db, "pantryItems"));
+  const pantrySnap = await getDocs(
+    query(collection(db, "pantryItems"), where("householdId", "==", requireHouseholdId(householdId)))
+  );
   const pantryItems = pantrySnap.docs.map((itemDoc) => ({
     ...(itemDoc.data() as PantryItem),
     id: itemDoc.id,
   }));
+  const recipeIngredients = getRecipeIngredientList(recipe.ingredients || []);
 
   const batch = writeBatch(db);
   const deducted: { item_id: string; deducted: number; new_amount: number }[] = [];
   const missing: string[] = [];
 
-  for (const ingredient of recipe.ingredients || []) {
-    const amountToDeduct = parseIngredientAmount(ingredient);
+  for (const ingredient of recipeIngredients) {
+    const amountToDeduct =
+      typeof ingredient === "string" ? parseIngredientAmount(ingredient) : getRecipeIngredientComparableAmount(ingredient);
     const allocation = allocateIngredientAcrossPantry(ingredient, amountToDeduct, pantryItems);
     if (!allocation.satisfied) {
-      missing.push(ingredient);
+      missing.push(recipeIngredientToText(ingredient));
     }
   }
 
@@ -936,12 +1222,14 @@ export async function cookRecipeFromFirestore(recipeId: string) {
     throw new Error(`Missing or insufficient pantry items: ${missing.join(", ")}`);
   }
 
-  for (const ingredient of recipe.ingredients || []) {
-    const amountToDeduct = parseIngredientAmount(ingredient);
+  for (const ingredient of recipeIngredients) {
+    const amountToDeduct =
+      typeof ingredient === "string" ? parseIngredientAmount(ingredient) : getRecipeIngredientComparableAmount(ingredient);
     const allocation = allocateIngredientAcrossPantry(ingredient, amountToDeduct, pantryItems);
     for (const { item, used } of allocation.allocations) {
-      const currentQty = getItemQuantityValue(item);
-      const newQty = Math.max(0, currentQty - used);
+      const currentComparable = getComparableItemQuantity(item);
+      const newComparable = Math.max(0, currentComparable - used);
+      const newQty = roundComparableAmount(fromComparableAmount(newComparable, item.unit));
       item.quantity = newQty;
       item.amount = newQty;
       deducted.push({ item_id: item.id, deducted: used, new_amount: newQty });
@@ -961,6 +1249,7 @@ export async function cookRecipeFromFirestore(recipeId: string) {
         );
       }
       batch.set(doc(collection(db, "usageLogs")), {
+        householdId: requireHouseholdId(householdId),
         item_id: item.id,
         item_name: item.name,
         recipe_id: recipeId,
@@ -980,8 +1269,9 @@ export async function cookRecipeFromFirestore(recipeId: string) {
   return deducted;
 }
 
-export async function requestRecipeDiscovery() {
+export async function requestRecipeDiscovery(householdId: string) {
   const requestRef = await addDoc(collection(db, "recipeRequests"), {
+    householdId: requireHouseholdId(householdId),
     type: "discover",
     status: "pending",
     createdBy: "web-dashboard",
@@ -990,8 +1280,9 @@ export async function requestRecipeDiscovery() {
   return requestRef.id;
 }
 
-export async function requestSmartShoppingPlan() {
+export async function requestSmartShoppingPlan(householdId: string) {
   const requestRef = await addDoc(collection(db, "smartPlanRequests"), {
+    householdId: requireHouseholdId(householdId),
     status: "pending",
     createdBy: "web-dashboard",
     createdAt: serverTimestamp(),
@@ -1003,8 +1294,10 @@ export async function deleteRecipe(recipeId: string) {
   await deleteDoc(doc(db, "recipes", recipeId));
 }
 
-export async function clearAllRecipes() {
-  const recipeSnap = await getDocs(collection(db, "recipes"));
+export async function clearAllRecipes(householdId: string) {
+  const recipeSnap = await getDocs(
+    query(collection(db, "recipes"), where("householdId", "==", requireHouseholdId(householdId)))
+  );
   const batch = writeBatch(db);
   recipeSnap.docs.forEach((recipeDoc) => {
     batch.delete(recipeDoc.ref);

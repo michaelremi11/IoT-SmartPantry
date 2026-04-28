@@ -3,6 +3,7 @@
 // Uses NEXT_PUBLIC_ environment variables (safe to expose to the browser).
 
 import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
+import { getAuth, Auth } from "firebase/auth";
 import { getFirestore, Firestore } from "firebase/firestore";
 
 const firebaseConfig = {
@@ -19,4 +20,5 @@ const firebaseConfig = {
 const app: FirebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
 export const db: Firestore = getFirestore(app);
+export const auth: Auth = getAuth(app);
 export default app;

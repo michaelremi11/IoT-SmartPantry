@@ -31,6 +31,7 @@ class EnvironmentLogger:
 
     COLLECTION = os.getenv("FIRESTORE_LOGS_COLLECTION", "environmentLogs")
     DEVICE_ID = os.getenv("HUB_DEVICE_ID", "hub-rpi4-001")
+    HOUSEHOLD_ID = os.getenv("SMART_PANTRY_HOUSEHOLD_ID", "default")
     INTERVAL = int(os.getenv("HUB_TEMP_LOG_INTERVAL_SECONDS", "300"))
 
     def __init__(self):
@@ -53,6 +54,7 @@ class EnvironmentLogger:
             humidity = round(50.0 + random.uniform(-10, 15), 2)
 
         return {
+            "householdId": self.HOUSEHOLD_ID,
             "deviceId": self.DEVICE_ID,
             "temperatureC": temp,
             "humidityPercent": humidity,

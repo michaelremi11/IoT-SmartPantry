@@ -89,11 +89,11 @@ def health() -> dict:
 
 
 @app.get("/forecast", response_model=list[ForecastItem])
-def forecast_all() -> list[ForecastItem]:
+def forecast_all(household_id: str) -> list[ForecastItem]:
     db = get_db()
     results = []
-    for item in get_pantry_items(db):
-        history = get_item_quantity_history(db, item["id"], days=30)
+    for item in get_pantry_items(db, household_id=household_id):
+        history = get_item_quantity_history(db, item["id"], days=30, household_id=household_id)
         rate = compute_consumption_rate(history)
         days_left = days_until_empty(item.get("quantity", 0), rate)
         results.append(
@@ -111,13 +111,13 @@ def forecast_all() -> list[ForecastItem]:
 
 
 @app.get("/forecast/{item_id}", response_model=ForecastItem)
-def forecast_one(item_id: str) -> ForecastItem:
-    matches = [item for item in get_pantry_items(get_db()) if item["id"] == item_id]
+def forecast_one(item_id: str, household_id: str) -> ForecastItem:
+    matches = [item for item in get_pantry_items(get_db(), household_id=household_id) if item["id"] == item_id]
     if not matches:
         raise HTTPException(status_code=404, detail="Item not found")
     item = matches[0]
     db = get_db()
-    history = get_item_quantity_history(db, item_id, days=30)
+    history = get_item_quantity_history(db, item_id, days=30, household_id=household_id)
     rate = compute_consumption_rate(history)
     days_left = days_until_empty(item.get("quantity", 0), rate)
     return ForecastItem(
@@ -132,9 +132,9 @@ def forecast_one(item_id: str) -> ForecastItem:
 
 
 @app.get("/anomalies", response_model=list[dict])
-def recent_anomalies(hours: int = 24) -> list[dict]:
+def recent_anomalies(household_id: str, hours: int = 24) -> list[dict]:
     flagged = []
-    for reading in get_environment_logs(get_db(), hours=hours):
+    for reading in get_environment_logs(get_db(), hours=hours, household_id=household_id):
         flags = check_environment(
             reading.get("temperatureC", 20),
             reading.get("humidityPercent", 50),
@@ -212,13 +212,13 @@ def lookup_sku(sku: str) -> dict:
 
 
 @app.get("/buy-signals")
-def buy_signals(days: int = 30) -> list[dict]:
-    return get_buy_signals(get_db(), days=days)
+def buy_signals(household_id: str, days: int = 30) -> list[dict]:
+    return get_buy_signals(get_db(), days=days, household_id=household_id)
 
 
 @app.get("/recommendations")
-def meal_recommendations() -> dict:
-    items = get_pantry_items(get_db())
+def meal_recommendations(household_id: str) -> dict:
+    items = get_pantry_items(get_db(), household_id=household_id)
     recipes = _generate_recipes(items)
     return {
         "recipes": recipes,

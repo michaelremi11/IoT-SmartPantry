@@ -1,0 +1,49 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwnUser(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isHouseholdMember(householdId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.householdId == householdId;
+    }
+
+    function resourceHouseholdId() {
+      return resource.data.householdId;
+    }
+
+    function requestHouseholdId() {
+      return request.resource.data.householdId;
+    }
+
+    match /users/{userId} {
+      allow read: if isOwnUser(userId);
+      allow create: if isOwnUser(userId) && requestHouseholdId() is string;
+      allow update: if isOwnUser(userId) && requestHouseholdId() == resourceHouseholdId();
+    }
+
+    match /households/{householdId} {
+      allow read: if isHouseholdMember(householdId);
+      allow create: if signedIn() && request.auth.uid in request.resource.data.memberUids;
+      allow update: if isHouseholdMember(householdId);
+    }
+
+    match /productLookups/{docId} {
+      allow read, write: if signedIn();
+    }
+
+    match /{collectionName}/{docId} {
+      allow read: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+      allow create: if requestHouseholdId() is string && isHouseholdMember(requestHouseholdId());
+      allow update, delete: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+    }
+  }
+}

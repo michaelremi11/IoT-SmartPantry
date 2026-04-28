@@ -23,6 +23,7 @@ class AddItemScreen(Screen):
         super().__init__(**kwargs)
         self.collection_name = os.getenv("FIRESTORE_PANTRY_COLLECTION", "pantryItems")
         self.usage_logs_collection = os.getenv("FIRESTORE_USAGE_LOGS_COLLECTION", "usageLogs")
+        self.household_id = os.getenv("SMART_PANTRY_HOUSEHOLD_ID", "default")
         self.name = "add_item"
         self._build_ui()
 
@@ -119,6 +120,7 @@ class AddItemScreen(Screen):
             return
 
         item = {
+            "householdId": self.household_id,
             "name": name,
             "barcode": self.barcode_input.text.strip(),
             "quantity": float(qty_str),
@@ -136,6 +138,7 @@ class AddItemScreen(Screen):
             doc_ref = db.collection(self.collection_name).document()
             doc_ref.set(item)
             db.collection(self.usage_logs_collection).document().set({
+                "householdId": self.household_id,
                 "item_id": doc_ref.id,
                 "item_name": item["name"],
                 "sku": item["barcode"] or None,

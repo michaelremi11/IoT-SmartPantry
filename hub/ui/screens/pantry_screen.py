@@ -24,6 +24,7 @@ class PantryScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.collection_name = os.getenv("FIRESTORE_PANTRY_COLLECTION", "pantryItems")
+        self.household_id = os.getenv("SMART_PANTRY_HOUSEHOLD_ID", "default")
         self.name = "pantry"
         self._build_ui()
         # Refresh inventory every 30 seconds
@@ -105,7 +106,7 @@ class PantryScreen(Screen):
         try:
             db = get_db()
             docs = []
-            for doc in db.collection(self.collection_name).stream():
+            for doc in db.collection(self.collection_name).where("householdId", "==", self.household_id).stream():
                 data = doc.to_dict() or {}
                 data["id"] = doc.id
                 docs.append(data)
