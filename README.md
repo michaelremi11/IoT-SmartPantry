@@ -201,6 +201,39 @@ See the **Firebase Console Checklist** section in the project documentation or r
 
 ---
 
+## Seed Analytics Test Data
+
+If you want realistic demo data for one household without hand-entering weeks of inventory activity, use:
+
+```bash
+cd /Users/lukedotzler/Documents/IotProject/IoT-SmartPantry
+python scripts/seed_household_analytics.py --household-id YOUR_HOUSEHOLD_ID --reset
+```
+
+What it seeds:
+
+- `pantryItems`
+- `usageLogs`
+- `environmentLogs`
+- `recipes`
+
+Then it refreshes:
+
+- `analyticsSummaries`
+- `smartShoppingPlans`
+
+Useful flags:
+
+```bash
+python scripts/seed_household_analytics.py --household-id YOUR_HOUSEHOLD_ID --dry-run
+python scripts/seed_household_analytics.py --household-id YOUR_HOUSEHOLD_ID --scenario waste-heavy
+python scripts/seed_household_analytics.py --household-id YOUR_HOUSEHOLD_ID --days 60
+```
+
+`--reset` only clears data for the specified household; it does not wipe the whole Firebase project.
+
+---
+
 ## Goals
 
 1. **Reduce Food Waste**: Expiry tracking and "use soon" nudges prevent items from spoiling unnoticed.
