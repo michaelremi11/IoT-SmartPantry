@@ -16,6 +16,12 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.householdId == householdId;
     }
 
+    function isHouseholdOwner(householdId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/households/$(householdId))
+        && get(/databases/$(database)/documents/households/$(householdId)).data.ownerUid == request.auth.uid;
+    }
+
     function resourceHouseholdId() {
       return resource.data.householdId;
     }
@@ -32,18 +38,71 @@ service cloud.firestore {
 
     match /households/{householdId} {
       allow read: if isHouseholdMember(householdId);
-      allow create: if signedIn() && request.auth.uid in request.resource.data.memberUids;
-      allow update: if isHouseholdMember(householdId);
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.memberUids is list
+        && request.resource.data.memberUids.size() == 1
+        && request.resource.data.memberUids[0] == request.auth.uid;
+      allow update: if isHouseholdOwner(householdId)
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.memberUids is list
+        && request.auth.uid in request.resource.data.memberUids;
     }
 
     match /productLookups/{docId} {
-      allow read, write: if signedIn();
+      allow read: if signedIn();
+      allow create, update, delete: if false;
     }
 
-    match /{collectionName}/{docId} {
+    match /pantryItems/{docId} {
       allow read: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
       allow create: if requestHouseholdId() is string && isHouseholdMember(requestHouseholdId());
       allow update, delete: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+    }
+
+    match /shoppingList/{docId} {
+      allow read: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+      allow create: if requestHouseholdId() is string && isHouseholdMember(requestHouseholdId());
+      allow update, delete: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+    }
+
+    match /recipes/{docId} {
+      allow read: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+      allow create: if requestHouseholdId() is string && isHouseholdMember(requestHouseholdId());
+      allow update, delete: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+    }
+
+    match /usageLogs/{docId} {
+      allow read: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+      allow create: if requestHouseholdId() is string && isHouseholdMember(requestHouseholdId());
+      allow update, delete: if false;
+    }
+
+    match /recipeRequests/{docId} {
+      allow read: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+      allow create: if requestHouseholdId() is string && isHouseholdMember(requestHouseholdId());
+      allow update, delete: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+    }
+
+    match /smartPlanRequests/{docId} {
+      allow read: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+      allow create: if requestHouseholdId() is string && isHouseholdMember(requestHouseholdId());
+      allow update, delete: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+    }
+
+    match /analyticsSummaries/{docId} {
+      allow read: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+      allow create, update, delete: if false;
+    }
+
+    match /smartShoppingPlans/{docId} {
+      allow read: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+      allow create, update, delete: if false;
+    }
+
+    match /environmentLogs/{docId} {
+      allow read: if resourceHouseholdId() is string && isHouseholdMember(resourceHouseholdId());
+      allow create, update, delete: if false;
     }
   }
 }

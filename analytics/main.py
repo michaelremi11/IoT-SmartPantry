@@ -14,7 +14,7 @@ from typing import Optional
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -32,6 +32,32 @@ from analytics.worker import start_background_worker, stop_background_worker, _g
 
 load_dotenv()
 
+
+def _parse_allowed_origins() -> list[str]:
+    raw_value = os.getenv(
+        "SMART_PANTRY_CORS_ALLOWED_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    )
+    return [origin.strip() for origin in raw_value.split(",") if origin.strip()]
+
+
+def require_api_access(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")) -> None:
+    if os.getenv("SMART_PANTRY_ALLOW_UNAUTHENTICATED_API", "false").lower() == "true":
+        return
+
+    expected_token = os.getenv("SMART_PANTRY_INTERNAL_API_TOKEN", "").strip()
+    if not expected_token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Internal API token is not configured",
+        )
+
+    if x_api_key != expected_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key",
+        )
+
 app = FastAPI(
     title="Smart Pantry Firebase Worker",
     description="Recipe generation, Firebase analytics summaries, and diagnostics",
@@ -40,12 +66,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_parse_allowed_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(analytics_router)
+app.include_router(analytics_router, dependencies=[Depends(require_api_access)])
 
 
 class SensorReading(BaseModel):
@@ -88,7 +114,7 @@ def health() -> dict:
     }
 
 
-@app.get("/forecast", response_model=list[ForecastItem])
+@app.get("/forecast", response_model=list[ForecastItem], dependencies=[Depends(require_api_access)])
 def forecast_all(household_id: str) -> list[ForecastItem]:
     db = get_db()
     results = []
@@ -110,7 +136,7 @@ def forecast_all(household_id: str) -> list[ForecastItem]:
     return results
 
 
-@app.get("/forecast/{item_id}", response_model=ForecastItem)
+@app.get("/forecast/{item_id}", response_model=ForecastItem, dependencies=[Depends(require_api_access)])
 def forecast_one(item_id: str, household_id: str) -> ForecastItem:
     matches = [item for item in get_pantry_items(get_db(), household_id=household_id) if item["id"] == item_id]
     if not matches:
@@ -131,7 +157,7 @@ def forecast_one(item_id: str, household_id: str) -> ForecastItem:
     )
 
 
-@app.get("/anomalies", response_model=list[dict])
+@app.get("/anomalies", response_model=list[dict], dependencies=[Depends(require_api_access)])
 def recent_anomalies(household_id: str, hours: int = 24) -> list[dict]:
     flagged = []
     for reading in get_environment_logs(get_db(), hours=hours, household_id=household_id):
@@ -153,7 +179,7 @@ def recent_anomalies(household_id: str, hours: int = 24) -> list[dict]:
     return flagged
 
 
-@app.post("/anomalies/check", response_model=list[AnomalyFlag])
+@app.post("/anomalies/check", response_model=list[AnomalyFlag], dependencies=[Depends(require_api_access)])
 def check_anomaly(reading: SensorReading) -> list[AnomalyFlag]:
     return [AnomalyFlag(**flag) for flag in check_environment(reading.temperatureC, reading.humidityPercent)]
 
@@ -162,7 +188,7 @@ OFF_BASE = "https://world.openfoodfacts.org/api/v2/product"
 OFF_FIELDS = "product_name,quantity,categories_tags,brands,nutriments,image_url"
 
 
-@app.get("/lookup/{sku}")
+@app.get("/lookup/{sku}", dependencies=[Depends(require_api_access)])
 def lookup_sku(sku: str) -> dict:
     """
     Compatibility product lookup endpoint.
@@ -211,12 +237,12 @@ def lookup_sku(sku: str) -> dict:
     return result
 
 
-@app.get("/buy-signals")
+@app.get("/buy-signals", dependencies=[Depends(require_api_access)])
 def buy_signals(household_id: str, days: int = 30) -> list[dict]:
     return get_buy_signals(get_db(), days=days, household_id=household_id)
 
 
-@app.get("/recommendations")
+@app.get("/recommendations", dependencies=[Depends(require_api_access)])
 def meal_recommendations(household_id: str) -> dict:
     items = get_pantry_items(get_db(), household_id=household_id)
     recipes = _generate_recipes(items)

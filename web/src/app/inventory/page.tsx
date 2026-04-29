@@ -56,7 +56,7 @@ type BuySignal = {
   days_until_empty?: number | null;
   expiry_ratio?: number | null;
 };
-type ManualField = "name" | "category" | "amount" | "unit";
+type ManualField = "name" | "category" | "amount" | "unit" | "search";
 const RECIPE_FILTER_OPTIONS: Array<{ value: RecipeFilter; label: string }> = [
   { value: "none", label: "Default" },
   { value: "match", label: "Best Match" },
@@ -92,7 +92,7 @@ const TOUCH_NUMERIC_ROWS = [
   ["7", "8", "9"],
   ["0", "."],
 ];
-const MANUAL_FIELD_ORDER: ManualField[] = ["name", "category", "amount", "unit"];
+const MANUAL_FIELD_ORDER: ManualField[] = ["name", "category", "amount", "unit", "search"];
 
 export default function InventoryPage() {
   const { user, loading: authLoading } = useAuth();
@@ -344,6 +344,10 @@ export default function InventoryPage() {
       applyManualName(value);
       return;
     }
+    if (field === "search") {
+      setSearch(value);
+      return;
+    }
     if (field === "category") {
       setManualCat(value);
       return;
@@ -357,6 +361,7 @@ export default function InventoryPage() {
 
   const getManualFieldValue = (field: ManualField | null) => {
     if (field === "name") return manualName;
+    if (field === "search") return search;
     if (field === "category") return manualCat;
     if (field === "amount") return manualAmount;
     if (field === "unit") return manualUnit;
@@ -678,7 +683,7 @@ export default function InventoryPage() {
                   <div>
                     <p className="text-sm font-semibold text-emerald-300">On-Screen Keyboard</p>
                     <p className="text-xs text-gray-500">
-                      Editing {activeManualField === "name" ? "Item Name" : activeManualField === "category" ? "Category" : activeManualField === "amount" ? "Amount" : "Unit"}
+                      Editing {activeManualField === "name" ? "Item Name" : activeManualField === "category" ? "Category" : activeManualField === "amount" ? "Amount" : activeManualField === "unit" ? "Unit" : "Search"}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -735,7 +740,7 @@ export default function InventoryPage() {
             )}
 
             {/* Search */}
-            <input type="search" placeholder="Search items..." value={search} onChange={(e) => setSearch(e.target.value)} className="w-full px-4 py-3 rounded-xl bg-gray-900 border border-gray-800 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm" />
+            <input type="search" placeholder="Search items..." value={search} onFocus={() => setActiveManualField("search")} onClick={() => setActiveManualField("search")} onChange={(e) => setSearch(e.target.value)} className={`w-full px-4 py-3 rounded-xl bg-gray-900 border text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm ${activeManualField === "search" ? "border-emerald-500" : "border-gray-800"}`} />
 
             {/* Display Inventory Grouped */}
             {loading ? (
