@@ -3,9 +3,11 @@
 import Link from "next/link";
 import { logout } from "@/lib/auth";
 import { useAuth } from "./auth-provider";
+import { usePreferences } from "./preferences-provider";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
+  const { theme, toggleTheme, ready } = usePreferences();
 
   return (
     <>
@@ -33,8 +35,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               Shopping
             </Link>
+            <Link
+              href="/settings"
+              className="rounded px-3 py-2 text-sm font-medium text-gray-300 hover:bg-gray-900 hover:text-white"
+            >
+              Settings
+            </Link>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="inline-flex items-center gap-2 rounded border border-gray-700 px-3 py-2 text-sm font-medium text-gray-300 hover:bg-gray-900 hover:text-white"
+              aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              <span aria-hidden="true">{ready && theme === "light" ? "◐" : "☀"}</span>
+              <span className="hidden sm:inline">{ready && theme === "light" ? "Dark Mode" : "Light Mode"}</span>
+            </button>
             {loading ? (
               <span className="text-xs text-gray-500">Loading account...</span>
             ) : user ? (
@@ -51,7 +69,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </button>
               </>
             ) : (
-              <span className="text-xs text-gray-500">Sign in to access your pantry</span>
+              <span className="hidden text-xs text-gray-500 sm:inline">Sign in to access your pantry</span>
             )}
           </div>
         </nav>

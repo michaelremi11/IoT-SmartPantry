@@ -12,15 +12,92 @@
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html[data-theme="dark"] {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+}
+
+html[data-theme="light"] {
+  --background: #f3f7fb;
+  --foreground: #102033;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+html[data-theme="light"] .bg-gray-950 {
+  background-color: #f3f7fb !important;
+}
+
+html[data-theme="light"] .bg-gray-950\/95 {
+  background-color: rgba(243, 247, 251, 0.95) !important;
+}
+
+html[data-theme="light"] .bg-gray-950\/70,
+html[data-theme="light"] .bg-gray-950\/60,
+html[data-theme="light"] .bg-gray-950\/50 {
+  background-color: rgba(226, 232, 240, 0.7) !important;
+}
+
+html[data-theme="light"] .bg-gray-900,
+html[data-theme="light"] .bg-gray-900\/90,
+html[data-theme="light"] .bg-gray-900\/80,
+html[data-theme="light"] .bg-gray-900\/70,
+html[data-theme="light"] .bg-gray-900\/60,
+html[data-theme="light"] .bg-gray-900\/50,
+html[data-theme="light"] .bg-gray-900\/40,
+html[data-theme="light"] .bg-gray-900\/30 {
+  background-color: rgba(255, 255, 255, 0.92) !important;
+}
+
+html[data-theme="light"] .bg-gray-800 {
+  background-color: #e2e8f0 !important;
+}
+
+html[data-theme="light"] .text-gray-100,
+html[data-theme="light"] .text-gray-200 {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .text-gray-300 {
+  color: #334155 !important;
+}
+
+html[data-theme="light"] .text-gray-400 {
+  color: #475569 !important;
+}
+
+html[data-theme="light"] .text-gray-500 {
+  color: #64748b !important;
+}
+
+html[data-theme="light"] .border-gray-900 {
+  border-color: #94a3b8 !important;
+}
+
+html[data-theme="light"] .border-gray-800,
+html[data-theme="light"] .border-gray-700 {
+  border-color: #cbd5e1 !important;
+}
+
+html[data-theme="light"] .hover\:bg-gray-900:hover,
+html[data-theme="light"] .hover\:bg-gray-800:hover,
+html[data-theme="light"] .hover\:bg-gray-700:hover {
+  background-color: #e2e8f0 !important;
+}
+
+html[data-theme="light"] .active\:bg-gray-600:active {
+  background-color: #cbd5e1 !important;
+}
+
+html[data-theme="light"] .shadow-xl,
+html[data-theme="light"] .shadow-md,
+html[data-theme="light"] .shadow-sm {
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08) !important;
 }
