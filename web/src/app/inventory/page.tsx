@@ -1,7 +1,7 @@
 // web/src/app/inventory/page.tsx
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import {
   addBarcodeToPantry,
   addPantryItem,
@@ -24,7 +24,7 @@ import {
   subscribeRecipes,
 } from "@/lib/firestore";
 import { useAuth } from "@/components/auth-provider";
-import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, LineChart, Line } from 'recharts';
 
 type RecipeFilter = "time" | "match" | "none";
 type WasteReportRow = {
@@ -93,6 +93,80 @@ const TOUCH_NUMERIC_ROWS = [
   ["0", "."],
 ];
 const MANUAL_FIELD_ORDER: ManualField[] = ["name", "category", "amount", "unit", "search"];
+const ANALYTICS_CHART_HEIGHT = 250;
+
+function useMeasuredWidth() {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState(0);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) {
+      return;
+    }
+
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const nextWidth = Math.floor(node.getBoundingClientRect().width);
+      if (nextWidth > 0) {
+        setWidth(nextWidth);
+      }
+    };
+
+    const scheduleMeasure = () => {
+      if (frame) {
+        cancelAnimationFrame(frame);
+      }
+      frame = requestAnimationFrame(measure);
+    };
+
+    scheduleMeasure();
+    window.addEventListener("resize", scheduleMeasure);
+
+    return () => {
+      if (frame) {
+        cancelAnimationFrame(frame);
+      }
+      window.removeEventListener("resize", scheduleMeasure);
+    };
+  }, []);
+
+  return { ref, width };
+}
+
+function ChartFrame({
+  title,
+  emptyLabel,
+  footer,
+  children,
+}: {
+  title: string;
+  emptyLabel: string;
+  footer?: ReactNode;
+  children: (width: number) => ReactNode;
+}) {
+  const { ref, width } = useMeasuredWidth();
+  const chartWidth = width > 0 ? width : 0;
+
+  return (
+    <div className="bg-gray-900/50 border border-gray-800 p-6 rounded-xl flex flex-col">
+      <h2 className="text-lg font-bold text-gray-200 mb-4">{title}</h2>
+      <div ref={ref} className="w-full min-h-[250px]">
+        {chartWidth >= 240 ? (
+          <div className="overflow-x-auto">
+            <div style={{ width: Math.max(chartWidth, 320), height: ANALYTICS_CHART_HEIGHT }}>
+              {children(Math.max(chartWidth, 320))}
+            </div>
+          </div>
+        ) : (
+          <div className="h-[250px] flex items-center justify-center text-gray-600">{emptyLabel}</div>
+        )}
+      </div>
+      {footer}
+    </div>
+  );
+}
 
 export default function InventoryPage() {
   const { user, loading: authLoading } = useAuth();
@@ -1034,40 +1108,62 @@ export default function InventoryPage() {
           <div className="space-y-8 animate-in fade-in flex flex-col">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
-              <div className="bg-gray-900/50 border border-gray-800 p-6 rounded-xl flex flex-col">
-                 <h2 className="text-lg font-bold text-gray-200 mb-4">Category Popularity</h2>
-                 {popCategories.length > 0 ? (
-                   <div className="flex-1 w-full h-[250px]">
-                     <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={popCategories}>
-                          <XAxis dataKey="category" stroke="#9ca3af" fontSize={12} tickLine={false} axisLine={false} />
-                          <RechartsTooltip cursor={{fill: 'rgba(255,255,255,0.05)'}} contentStyle={{backgroundColor: '#111827', borderColor: '#374151', borderRadius: '8px'}} />
-                          <Bar dataKey="count" fill="#10b981" radius={[4,4,0,0]} />
-                        </BarChart>
-                     </ResponsiveContainer>
-                   </div>
-                 ) : (
-                   <div className="h-[250px] flex items-center justify-center text-gray-600">No data</div>
-                 )}
-              </div>
+              <ChartFrame
+                title="Category Popularity"
+                emptyLabel={popCategories.length > 0 ? "Sizing chart..." : "No data"}
+                footer={
+                  popCategories.length > 0 ? (
+                    <div className="mt-4 grid grid-cols-1 gap-2 text-sm text-gray-400">
+                      {popCategories.slice(0, 4).map((entry) => (
+                        <div key={entry.category} className="flex items-center justify-between rounded-lg bg-gray-900/40 px-3 py-2">
+                          <span className="capitalize">{entry.category}</span>
+                          <span className="font-semibold text-gray-200">{entry.count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null
+                }
+              >
+                {(chartWidth) => (
+                  <BarChart width={chartWidth} height={ANALYTICS_CHART_HEIGHT} data={popCategories} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                    <XAxis dataKey="category" stroke="#9ca3af" fontSize={12} tickLine={false} axisLine={false} />
+                    <RechartsTooltip cursor={{ fill: "rgba(255,255,255,0.05)" }} contentStyle={{ backgroundColor: "#111827", borderColor: "#374151", borderRadius: "8px" }} />
+                    <Bar dataKey="count" fill="#10b981" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                  </BarChart>
+                )}
+              </ChartFrame>
 
-              <div className="bg-gray-900/50 border border-gray-800 p-6 rounded-xl flex flex-col">
-                 <h2 className="text-lg font-bold text-gray-200 mb-4">Sustainability Score (7 Days)</h2>
-                 {historicalScore.length > 0 ? (
-                   <div className="flex-1 w-full h-[250px]">
-                     <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={historicalScore}>
-                          <XAxis dataKey="date" stroke="#9ca3af" fontSize={10} tickLine={false} axisLine={false} />
-                          <YAxis domain={[0, 100]} stroke="#9ca3af" fontSize={12} tickLine={false} axisLine={false} hide />
-                          <RechartsTooltip contentStyle={{backgroundColor: '#111827', borderColor: '#374151', borderRadius: '8px'}} />
-                          <Line type="monotone" dataKey="score" stroke="#10b981" strokeWidth={3} dot={{r:4, fill:'#10b981', strokeWidth:0}} />
-                        </LineChart>
-                     </ResponsiveContainer>
-                   </div>
-                 ) : (
-                   <div className="h-[250px] flex items-center justify-center text-gray-600">No data</div>
-                 )}
-              </div>
+              <ChartFrame
+                title="Sustainability Score (7 Days)"
+                emptyLabel={historicalScore.length > 0 ? "Sizing chart..." : "No data"}
+                footer={
+                  historicalScore.length > 0 ? (
+                    <div className="mt-4 flex flex-wrap gap-2 text-xs text-gray-400">
+                      {historicalScore.slice(-4).map((entry) => (
+                        <span key={entry.date} className="rounded-full bg-gray-900/40 px-3 py-1">
+                          {entry.date}: <span className="font-semibold text-gray-200">{entry.score}</span>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null
+                }
+              >
+                {(chartWidth) => (
+                  <LineChart width={chartWidth} height={ANALYTICS_CHART_HEIGHT} data={historicalScore} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
+                    <XAxis dataKey="date" stroke="#9ca3af" fontSize={10} tickLine={false} axisLine={false} />
+                    <YAxis domain={[0, 100]} stroke="#9ca3af" fontSize={12} tickLine={false} axisLine={false} hide />
+                    <RechartsTooltip contentStyle={{ backgroundColor: "#111827", borderColor: "#374151", borderRadius: "8px" }} />
+                    <Line
+                      type="monotone"
+                      dataKey="score"
+                      stroke="#10b981"
+                      strokeWidth={3}
+                      dot={{ r: 4, fill: "#10b981", strokeWidth: 0 }}
+                      isAnimationActive={false}
+                    />
+                  </LineChart>
+                )}
+              </ChartFrame>
 
             </div>
 
